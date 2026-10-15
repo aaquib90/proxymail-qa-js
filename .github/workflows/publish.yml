@@ -1,12 +1,14 @@
-# Publishes to npm when a GitHub release is published (tag v<version>), with
-# npm trusted publishing: GitHub's OIDC token proves the workflow to npm, so
-# no npm token is stored anywhere, and npm adds provenance (which commit and
-# workflow built the version) automatically.
+# Stages a release on npm when a GitHub release is published (tag
+# v<version>), with npm trusted publishing: GitHub's OIDC token proves the
+# workflow to npm, so no npm token is stored anywhere, and the version carries
+# provenance (which commit and workflow built it). The trusted publisher is
+# stage-only, so nothing is installable until a maintainer approves the staged
+# version with 2FA (npmjs.com, or `npm stage approve`).
 #
 # One-time setup on npmjs.com: proxymail-qa → Settings → Trusted publishing →
 # GitHub Actions, owner aaquib90, repository proxymail-qa-js, workflow
-# publish.yml, environment npm.
-name: Publish to npm
+# publish.yml, environment npm, with "Allow npm publish" left off.
+name: Stage on npm
 
 on:
   release:
@@ -26,10 +28,14 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or later.
-      - run: npm install -g npm@^11.5.1
+      # Staged publishing needs npm 11.15.0 or later.
+      - run: npm install -g npm@^11.15.0
       - name: Check the release tag matches package.json
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - run: npm ci
-      # prepublishOnly builds and tests first.
-      - run: npm publish
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm stage publish
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'

@@ -8,8 +8,11 @@ repository; this repo is its public copy, from which npm releases are built.
 2. Commit and push here. CI runs the typecheck, tests and build.
 3. Publish a GitHub release whose tag is `v` plus the version, for example
    `v0.1.1`: `gh release create v0.1.1 --title v0.1.1 --notes "…"`.
-4. The "Publish to npm" workflow checks the tag matches `package.json`, builds,
-   tests and publishes with npm trusted publishing, which adds provenance. npm
-   validates each new version for a few minutes before it can be installed.
+4. The "Stage on npm" workflow checks the tag matches `package.json`, then
+   typechecks, tests, builds and stages the version with npm trusted
+   publishing, which adds provenance.
+5. Approve the staged version on npmjs.com (or `npm stage list` then
+   `npm stage approve`), which asks for your 2FA code. Only then can it be
+   installed; npm validates each new version for a few minutes first.
 
 npm refuses to publish a version twice, so every release needs a new version.
