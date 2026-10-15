@@ -86,6 +86,9 @@ cy.task('createAddress').then(({ address }) => {
 // A persona with a date of birth for an age band, and a country.
 await qa.createAddress({ persona: true, age: 'under13', country: 'GB' });
 
+// Find a test account made earlier: an under-18 in GB with a saved password.
+const [teen] = await qa.listAddresses({ tags: ['age-gate'], country: 'GB', maxAge: 17, hasPassword: true });
+
 // The link that opens a mobile app (myapp://…) when the email also has a web one.
 const { value: appLink } = await qa.waitForLink(address, { app: true });
 

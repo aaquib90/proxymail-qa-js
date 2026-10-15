@@ -143,6 +143,16 @@ describe('ProxyMailQA', () => {
     expect(missing.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('finds addresses with filters', async () => {
+    const { fetch, qa } = client([Response.json([]), Response.json([])]);
+    await qa.listAddresses();
+    expect(String(fetch.mock.calls[0]![0])).toBe('https://api.test/v1/addresses');
+    await qa.listAddresses({ limit: 5, tags: ['age-gate', 'uk'], country: 'GB', minAge: 13, maxAge: 17, hasPassword: false, search: 'Jane' });
+    expect(String(fetch.mock.calls[1]![0])).toBe(
+      'https://api.test/v1/addresses?limit=5&tag=age-gate&tag=uk&country=GB&min_age=13&max_age=17&has_password=false&search=Jane',
+    );
+  });
+
   it('throws the API error with its status and code', async () => {
     const { qa } = client([Response.json({ error: 'forbidden', message: "This API key can't read saved passwords." }, { status: 403 })]);
     const error = await qa.savedPassword('a@mailclub.dev').catch((e: unknown) => e);

@@ -85,6 +85,25 @@ export interface CreateAddressInput {
   country?: string;
 }
 
+export interface ListAddressesOptions {
+  // 1 to 200; 50 when left out.
+  limit?: number;
+  // Addresses created before this time (ISO 8601), for paging.
+  before?: string;
+  // Addresses with every one of these tags.
+  tags?: string[];
+  // The persona's country, an ISO 3166-1 alpha-2 code such as GB.
+  country?: string;
+  // Age today in whole years, from the persona's date of birth: maxAge 17
+  // finds under-18s. Addresses without a date of birth don't match.
+  minAge?: number;
+  maxAge?: number;
+  // Whether a password is saved on the address.
+  hasPassword?: boolean;
+  // Part of the address, label, notes, name or username.
+  search?: string;
+}
+
 export interface AddressPatch {
   label?: string | null;
   notes?: string | null;
@@ -265,10 +284,18 @@ export class ProxyMailQA {
     });
   }
 
-  listAddresses(options: { limit?: number; before?: string } = {}) {
+  // Newest first. With filters, finds test accounts made earlier, such as
+  // an under-18 in GB with a saved password: every filter given must match.
+  listAddresses(options: ListAddressesOptions = {}) {
     const query = new URLSearchParams();
     if (options.limit) query.set('limit', String(options.limit));
     if (options.before) query.set('before', options.before);
+    for (const tag of options.tags ?? []) query.append('tag', tag);
+    if (options.country) query.set('country', options.country);
+    if (options.minAge !== undefined) query.set('min_age', String(options.minAge));
+    if (options.maxAge !== undefined) query.set('max_age', String(options.maxAge));
+    if (options.hasPassword !== undefined) query.set('has_password', String(options.hasPassword));
+    if (options.search) query.set('search', options.search);
     return this.request<Address[]>('GET', `/addresses${query.size ? `?${query}` : ''}`);
   }
 
