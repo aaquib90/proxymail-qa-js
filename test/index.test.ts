@@ -80,6 +80,53 @@ describe('ProxyMailQA', () => {
     expect(types).toBeTypeOf('function');
   });
 
+  it('counts emails with filters, and checks that none arrive', async () => {
+    const summary = { received_at: '2026-10-15T10:00:01Z', service: 'Acme', service_domain: 'acme.example', type: 'link', subtype: 'verify', email_id: 'e1' };
+    const { fetch, qa } = client([
+      Response.json({ address: 'a@mailclub.dev', since: '2026-10-15T10:00:00.000Z', count: 1, emails: [summary] }),
+      Response.json({ address: 'a@mailclub.dev', since: '2026-10-15T10:00:00.000Z', arrived: false, until: '2026-10-15T10:00:05.000Z' }),
+      Response.json(
+        { error: 'email_arrived', message: 'An email reached a@mailclub.dev since 2026-10-15T10:00:00.000Z, the first from Acme.', arrived: true, count: 1, email: summary },
+        { status: 409 },
+      ),
+    ]);
+    const since = new Date('2026-10-15T10:00:00Z');
+    expect((await qa.countEmails('a@mailclub.dev', { since, type: 'link', subtype: ['verify', 'reset'], service: 'acme' })).count).toBe(1);
+    expect(fetch.mock.calls[0]![0]).toBe('https://api.test/v1/addresses/a%40mailclub.dev/count?since=2026-10-15T10%3A00%3A00.000Z&service=acme&type=link&subtype=verify%2Creset');
+
+    expect(await qa.expectNoEmail('a@mailclub.dev', { since, timeout: 0 })).toEqual({
+      address: 'a@mailclub.dev',
+      since: '2026-10-15T10:00:00.000Z',
+      until: '2026-10-15T10:00:05.000Z',
+    });
+    expect(fetch.mock.calls[1]![0]).toBe('https://api.test/v1/addresses/a%40mailclub.dev/none?timeout=0&since=2026-10-15T10%3A00%3A00.000Z');
+
+    const error = await qa.expectNoEmail('a@mailclub.dev', { since, timeout: 0 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProxyMailQAError);
+    expect(error).toMatchObject({ status: 409, code: 'email_arrived', message: expect.stringMatching(/^An email reached/) });
+  });
+
+  it("keeps watching past 30 seconds from the server's own since", async () => {
+    vi.useFakeTimers({ now: Date.parse('2026-10-15T10:00:00Z') });
+    try {
+      const fetch = vi.fn(async (url: string) => {
+        // Each request holds for as long as it asked to.
+        const seconds = Number(new URL(url).searchParams.get('timeout'));
+        vi.setSystemTime(Date.now() + seconds * 1000);
+        return Response.json({ address: 'a@mailclub.dev', since: '2026-10-15T09:59:59.000Z', arrived: false, until: new Date().toISOString() });
+      });
+      const qa = new ProxyMailQA({ apiKey: 'qa_test', baseUrl: 'https://api.test', fetch: fetch as unknown as typeof globalThis.fetch });
+      const result = await qa.expectNoEmail('a@mailclub.dev', { timeout: 45 });
+      const urls = fetch.mock.calls.map(([url]) => new URL(url));
+      expect(urls.map((u) => u.searchParams.get('timeout'))).toEqual(['30', '15']);
+      // The first request lets the server pick since; the second reuses it.
+      expect(urls.map((u) => u.searchParams.get('since'))).toEqual([null, '2026-10-15T09:59:59.000Z']);
+      expect(result.since).toBe('2026-10-15T09:59:59.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says why a wait found nothing, and doesn't retry other 404s", async () => {
     const { qa } = client([
       Response.json(

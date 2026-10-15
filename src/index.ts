@@ -147,6 +147,45 @@ export interface WaitOptions {
 
 export type LinkType = 'verify' | 'magic_signin' | 'invite' | 'reset' | 'any';
 
+// An email without its content: when it came, who sent it and what its main
+// code or link was for.
+export interface EmailSummary {
+  received_at: string;
+  service: string | null;
+  service_domain: string | null;
+  type: 'code' | 'link' | null;
+  subtype: string | null;
+  email_id: string;
+}
+
+export interface EmailCount {
+  address: string;
+  since: string | null;
+  count: number;
+  // The first 50, oldest first.
+  emails: EmailSummary[];
+}
+
+export interface CountOptions {
+  // Only email received at or after this time (Date or ISO string).
+  since?: Date | string;
+  // Only email from this service, by name or domain.
+  service?: string;
+  // Only emails with a code (not coupons, unless subtype says) or with a link
+  // (verify, magic sign-in, invite or reset, unless subtype says).
+  type?: 'code' | 'link';
+  subtype?: CountSubtype | CountSubtype[];
+}
+
+export type CountSubtype = 'otp' | 'coupon' | 'verify' | 'magic_signin' | 'invite' | 'reset' | 'other' | 'any';
+
+// expectNoEmail's answer: nothing matching arrived between since and until.
+export interface NoEmail {
+  address: string;
+  since: string;
+  until: string;
+}
+
 // An API error. When a wait finds nothing, hint says why as far as Proxy Mail
 // QA can tell (an email provider in sandbox mode, say) and refused lists any
 // mail it turned away; both are in the message too.
@@ -165,6 +204,16 @@ export class ProxyMailQAError extends Error {
 }
 
 const TIMED_OUT = /^No (code|link) arrived/;
+
+function countQuery(options: CountOptions, extra: Record<string, string> = {}) {
+  const query = new URLSearchParams(extra);
+  if (options.since !== undefined) query.set('since', new Date(options.since).toISOString());
+  if (options.service) query.set('service', options.service);
+  if (options.type) query.set('type', options.type);
+  const subtype = [options.subtype ?? []].flat().join(',');
+  if (subtype) query.set('subtype', subtype);
+  return query.size ? `?${query}` : '';
+}
 
 const MAX_WAIT_SECONDS = 30;
 
@@ -258,6 +307,33 @@ export class ProxyMailQA {
     if (include.length) query.set('include', include.join(','));
     if (options.limit) query.set('limit', String(options.limit));
     return this.request<Array<Record<string, unknown>>>('GET', `/addresses/${encodeURIComponent(address)}/messages${query.size ? `?${query}` : ''}`);
+  }
+
+  // How many emails reached the address (since a time, from a service, with a
+  // code or link), each summarised without its content. Doesn't wait: count
+  // after the wait for the first email returns, so a duplicate has had time
+  // to arrive. Without since, every email the address has received.
+  countEmails(address: string, options: CountOptions = {}) {
+    return this.request<EmailCount>('GET', `/addresses/${encodeURIComponent(address)}/count${countQuery(options)}`);
+  }
+
+  // Resolves when no matching email arrives within timeout seconds (default
+  // 30; longer repeats the request), for checks such as "an unsubscribed user
+  // gets nothing". Throws ProxyMailQAError (status 409, code email_arrived)
+  // as soon as one does. Pass since as the time of the action, so an email
+  // that came before the call still counts; without it, from now.
+  async expectNoEmail(address: string, options: CountOptions & { timeout?: number } = {}): Promise<NoEmail> {
+    const deadline = Date.now() + (options.timeout ?? MAX_WAIT_SECONDS) * 1000;
+    let since = options.since;
+    for (;;) {
+      const left = Math.max(0, Math.min(MAX_WAIT_SECONDS, Math.ceil((deadline - Date.now()) / 1000)));
+      const query = countQuery({ ...options, since }, { timeout: String(left) });
+      const result = await this.request<NoEmail>('GET', `/addresses/${encodeURIComponent(address)}/none${query}`);
+      // The server's since, so later requests watch from the same moment
+      // whatever this machine's clock says.
+      since = result.since;
+      if (Date.now() >= deadline - 500) return { address: result.address, since: result.since, until: result.until };
+    }
   }
 
   // What reached the address and what was refused, without waiting: for when
