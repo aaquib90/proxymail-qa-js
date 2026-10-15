@@ -1,0 +1,53 @@
+{
+  "name": "proxymail-qa",
+  "version": "0.1.1",
+  "description": "Disposable test inboxes for Playwright, Cypress and scripts: create an address, then wait for its verification code or link.",
+  "license": "MIT",
+  "author": "Proxy Mail QA <hello@proxymail.qa> (https://proxymail.qa)",
+  "homepage": "https://proxymail.qa/docs/node",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aaquib90/proxymail-qa-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aaquib90/proxymail-qa-js/issues",
+    "email": "hello@proxymail.qa"
+  },
+  "keywords": [
+    "email testing",
+    "otp",
+    "magic link",
+    "email verification",
+    "playwright",
+    "cypress",
+    "qa"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.3"
+  }
+}
