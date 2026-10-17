@@ -106,6 +106,34 @@ await qa.setPassword(address, { password: 'the-new-test-password' });
 const result = await qa.checkEmail(address, { type: 'link', expectHost: 'staging.example.com' });
 expect(result.failed).toEqual([]);
 
+// A localised email: in German, with the user's name in it.
+await qa.checkEmail(address, { expectLanguage: 'de', expectText: ['Hallo Maya'] });
+
+// What to type or pick in each field of a sign-up form, from a new address
+// made for it: a username and password that fit the rules, the date of birth
+// in the field's format, a country the drop-down offers. You fill it in.
+const { values } = await qa.formValues({
+  fields: [
+    { id: 'email', type: 'email', label: 'Email' },
+    { id: 'dob', type: 'text', label: 'Date of birth', placeholder: 'DD/MM/YYYY' },
+  ],
+});
+
+// Borrow an account in the state the test needs. Your hooks make one when
+// none is free, confirm its state and put it back; they talk to your app,
+// Proxy Mail QA never does.
+await qa.withAccount(
+  {
+    tags: ['verified', 'premium'],
+    create: async (account) => signUpAndUpgrade(account.address, account.password),
+    check: async (account) => (await getUser(account.address)).plan === 'premium',
+    reset: async (account) => resetUser(account.address),
+  },
+  async (account) => {
+    // …the test…
+  },
+);
+
 // A run: this client's calls add what they saw, for a report on the pull
 // request. In GitHub Actions, the Proxy Mail QA action does this for you and
 // the client picks the run up from PROXYMAIL_QA_RUN.

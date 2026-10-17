@@ -94,6 +94,11 @@ describe('ProxyMailQA', () => {
     const { fetch, qa } = client([Response.json(checks)]);
     expect(await qa.checkEmail('a@mailclub.dev', { type: 'link', emailId: 'e1', expectHost: 'staging.acme.example' })).toEqual(checks);
     expect(fetch.mock.calls[0]![0]).toBe('https://api.test/v1/addresses/a%40mailclub.dev/checks?email_id=e1&expect_host=staging.acme.example&type=link');
+    const wording = client([Response.json(checks)]);
+    await wording.qa.checkEmail('a@mailclub.dev', { expectText: ['Hallo Maya', 'Konto & Plan'], expectLanguage: 'de' });
+    expect(wording.fetch.mock.calls[0]![0]).toBe(
+      'https://api.test/v1/addresses/a%40mailclub.dev/checks?expect_language=de&expect_text=Hallo%20Maya&expect_text=Konto%20%26%20Plan',
+    );
   });
 
   it('counts emails with filters, and checks that none arrive', async () => {
@@ -249,6 +254,150 @@ describe('ProxyMailQA', () => {
       }),
     ).rejects.toThrow('test failed');
     expect(String(fetch.mock.calls[1]![0])).toContain('/return');
+  });
+
+  it("asks for the values of a sign-up form, in the API's field names", async () => {
+    const answer = { address: 'new@mailclub.dev', created: true, persona: null, password: 'pw', values: [{ id: 'e', kind: 'email', value: 'new@mailclub.dev' }] };
+    const { fetch, qa } = client([Response.json(answer, { status: 201 })]);
+    expect(await qa.formValues({ fields: [{ id: 'e', type: 'email' }, { id: 'p', type: 'password', maxLength: 12 }], age: 'under18', country: 'GB' })).toEqual(answer);
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.test/v1/form-values');
+    expect(JSON.parse(String(init.body))).toEqual({ fields: [{ id: 'e', type: 'email' }, { id: 'p', type: 'password', max_length: 12 }], age: 'under18', country: 'GB' });
+  });
+
+  describe('prepared accounts (create, check and reset)', () => {
+    const held = (address: string, token = 't1', tags = ['premium']) => ({ address, tags, persona: null, checkout: { token, until: 'x' } });
+    const calls = (fetch: ReturnType<typeof client>['fetch']) =>
+      fetch.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${String(url).replace('https://api.test/v1', '')} ${init?.body ?? ''}`.trim());
+
+    it('checks the account, runs the test, then resets and returns it', async () => {
+      const { fetch, qa } = client([Response.json(held('p@mailclub.dev')), Response.json(held('p@mailclub.dev'))]);
+      const order: string[] = [];
+      const result = await qa.withAccount(
+        {
+          tags: ['premium'],
+          check: async () => void order.push('check'),
+          reset: async () => void order.push('reset'),
+        },
+        async () => {
+          order.push('test');
+          return 'done';
+        },
+      );
+      expect(result).toBe('done');
+      expect(order).toEqual(['check', 'test', 'reset']);
+      expect(calls(fetch)).toEqual([
+        'POST /addresses/checkout {"tags":["premium"]}',
+        'POST /addresses/p%40mailclub.dev/return {"token":"t1"}',
+      ]);
+    });
+
+    it('resets an account that fails its check, and skips one that still fails', async () => {
+      const { fetch, qa } = client([
+        Response.json(held('bad@mailclub.dev')),
+        Response.json(held('bad@mailclub.dev')),
+        Response.json(held('good@mailclub.dev', 't2')),
+        Response.json(held('good@mailclub.dev', 't2')),
+      ]);
+      const resets: string[] = [];
+      await qa.withAccount(
+        {
+          tags: ['premium'],
+          check: async (a) => {
+            if (a.address === 'bad@mailclub.dev') throw new Error('has 2 orders');
+          },
+          reset: async (a) => void resets.push(a.address),
+        },
+        async (a) => expect(a.address).toBe('good@mailclub.dev'),
+      );
+      expect(resets).toEqual(['bad@mailclub.dev', 'good@mailclub.dev']);
+      expect(calls(fetch)).toEqual([
+        'POST /addresses/checkout {"tags":["premium"]}',
+        'POST /addresses/bad%40mailclub.dev/return {"token":"t1","add_tags":["check-failed"],"remove_tags":["premium"]}',
+        'POST /addresses/checkout {"tags":["premium"]}',
+        'POST /addresses/good%40mailclub.dev/return {"token":"t2"}',
+      ]);
+    });
+
+    it('makes a new account when none is free, holding it while create runs', async () => {
+      const { fetch, qa } = client([
+        Response.json({ error: 'all_checked_out', message: 'All 2 matching accounts are checked out' }, { status: 409 }),
+        Response.json({ address: 'new@mailclub.dev', tags: [], password: 'pw-123', persona: { first_name: 'Ada', last_name: 'L', username: 'ada' } }, { status: 201 }),
+        Response.json(held('new@mailclub.dev', 't9', [])),
+        Response.json({ address: 'new@mailclub.dev', tags: ['premium'], persona: null }),
+        Response.json(held('new@mailclub.dev', 't9')),
+      ]);
+      const made: string[] = [];
+      await qa.withAccount(
+        {
+          tags: ['Premium'],
+          country: 'GB',
+          create: async (a) => void made.push(`${a.address} ${a.password}`),
+          check: async (a) => a.tags.includes('premium'),
+        },
+        async (a) => expect(a).toMatchObject({ address: 'new@mailclub.dev', tags: ['premium'], checkout: { token: 't9' } }),
+      );
+      expect(made).toEqual(['new@mailclub.dev pw-123']);
+      expect(calls(fetch)).toEqual([
+        'POST /addresses/checkout {"tags":["Premium"],"country":"GB"}',
+        'POST /addresses {"password":true,"country":"GB"}',
+        'POST /addresses/checkout {"search":"new@mailclub.dev"}',
+        'PATCH /addresses/new%40mailclub.dev {"tags":["premium"]}',
+        'POST /addresses/new%40mailclub.dev/return {"token":"t9"}',
+      ]);
+    });
+
+    it('keeps a new account out of the pool when create fails', async () => {
+      const { fetch, qa } = client([
+        Response.json({ error: 'not_found', message: 'No account matches these filters' }, { status: 404 }),
+        Response.json({ address: 'new@mailclub.dev', tags: [], password: 'pw' }, { status: 201 }),
+        Response.json(held('new@mailclub.dev', 't9', [])),
+        Response.json({ address: 'new@mailclub.dev', tags: [] }),
+        Response.json(held('new@mailclub.dev', 't9', [])),
+      ]);
+      const failed = qa.withAccount(
+        {
+          tags: ['verified'],
+          create: async () => {
+            throw new Error('sign-up form changed');
+          },
+        },
+        async () => 'never',
+      );
+      await expect(failed).rejects.toThrow('sign-up form changed');
+      expect(calls(fetch).slice(3)).toEqual(['PATCH /addresses/new%40mailclub.dev {"tags":[]}', 'POST /addresses/new%40mailclub.dev/return {"token":"t9"}']);
+    });
+
+    it('takes an account out of the pool when reset fails', async () => {
+      const { fetch, qa } = client([Response.json(held('p@mailclub.dev')), Response.json(held('p@mailclub.dev'))]);
+      const failed = qa.withAccount(
+        {
+          tags: ['premium'],
+          reset: async () => {
+            throw new Error('admin API down');
+          },
+        },
+        async () => ({ addTags: ['cancelled'] }),
+      );
+      await expect(failed).rejects.toThrow('admin API down');
+      expect(calls(fetch)[1]).toBe('POST /addresses/p%40mailclub.dev/return {"token":"t1","add_tags":["cancelled","needs-reset"],"remove_tags":["premium"]}');
+    });
+
+    it('says why when no account passes and none can be made', async () => {
+      const { qa } = client([
+        Response.json(held('a@mailclub.dev')),
+        Response.json(held('a@mailclub.dev')),
+        Response.json(held('a@mailclub.dev', 't2')),
+        Response.json(held('a@mailclub.dev', 't2')),
+      ]);
+      const failed = qa.withAccount({ tags: ['premium'], check: async () => false }, async () => 'never');
+      await expect(failed).rejects.toThrow('No test account passed the check: tried a@mailclub.dev (last: check returned false). Pass create to make one.');
+    });
+
+    it('asks for an age when new accounts must match one', async () => {
+      const { qa } = client([Response.json({ error: 'not_found', message: 'No account matches' }, { status: 404 })]);
+      await expect(qa.withAccount({ maxAge: 17, create: async () => {} }, async () => 'never')).rejects.toThrow('Give newAccount an age or dateOfBirth');
+    });
   });
 
   it('throws the API error with its status and code', async () => {
