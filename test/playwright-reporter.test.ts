@@ -4,10 +4,11 @@ import { ProxyMailQA } from '../src/index.ts';
 
 const RUN = '00000000-0000-4000-8000-000000000321';
 type Outcome = 'expected' | 'unexpected' | 'flaky' | 'skipped';
-const testCase = (title: string, outcome: Outcome, error?: string) => ({
+const step = (path: string[], error = true, steps: unknown[] = []) => ({ titlePath: () => path, error: error ? { message: 'x' } : undefined, steps });
+const testCase = (title: string, outcome: Outcome, error?: string, steps: unknown[] = []) => ({
   titlePath: () => ['', 'chromium', 'signup.spec.ts', 'sign-up', title],
   outcome: () => outcome,
-  results: [{ duration: 1234, error: error ? { message: error } : undefined }],
+  results: [{ duration: 1234, error: error ? { message: error } : undefined, steps }],
 });
 const suite = (...tests: ReturnType<typeof testCase>[]) => ({ allTests: () => tests });
 
@@ -31,7 +32,10 @@ describe('the Playwright reporter', () => {
       {},
       suite(
         testCase('gets a code', 'expected'),
-        testCase('one email', 'unexpected', 'expected 1, got 2'),
+        testCase('one email', 'unexpected', 'expected 1, got 2', [
+          step(['Sign up'], false),
+          step(['Enter the code'], true, [step(['Enter the code', 'Fill'], false), step(['Enter the code', "locator.fill(getByLabel('Code'))"])]),
+        ]),
         testCase('invite', 'flaky'),
         testCase('later', 'skipped'),
       ) as never,
@@ -39,7 +43,15 @@ describe('the Playwright reporter', () => {
     await reporter.onEnd({ status: 'failed' } as never);
     const sent = fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init!.body))]);
     expect(sent).toEqual([
-      [`https://api.test/v1/runs/${RUN}/tests`, { name: 'chromium › sign-up › one email', status: 'failed', duration_ms: 1234, error: 'expected 1, got 2' }],
+      [
+        `https://api.test/v1/runs/${RUN}/tests`,
+        {
+          name: 'chromium › sign-up › one email',
+          status: 'failed',
+          duration_ms: 1234,
+          error: "At “Enter the code › locator.fill(getByLabel('Code'))”: expected 1, got 2",
+        },
+      ],
       [`https://api.test/v1/runs/${RUN}/tests`, { name: 'chromium › sign-up › invite', status: 'flaky', duration_ms: 1234 }],
       [`https://api.test/v1/runs/${RUN}/tests`, { totals: { passed: 1, failed: 1, skipped: 1, flaky: 1 } }],
     ]);

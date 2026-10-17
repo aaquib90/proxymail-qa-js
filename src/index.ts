@@ -338,6 +338,7 @@ export type CheckId =
   | 'plain_text'
   | 'size'
   | 'images_only'
+  | 'layout'
   | 'expected_text'
   | 'language';
 

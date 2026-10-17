@@ -5,7 +5,7 @@
 //
 //   // playwright.config.ts
 //   reporter: [['list'], ['proxymail-qa/playwright/reporter']],
-import type { FullResult, Reporter, Suite, TestCase } from '@playwright/test/reporter';
+import type { FullResult, Reporter, Suite, TestCase, TestStep } from '@playwright/test/reporter';
 import { ProxyMailQA, type ClientOptions, type TestResultInput } from './index.js';
 import { testName } from './test-name.js';
 
@@ -39,7 +39,7 @@ export default class ProxyMailQAReporter implements Reporter {
           name: nameOf(test),
           status: flaky ? 'flaky' : 'failed',
           durationMs: last?.duration,
-          error: flaky ? undefined : last?.error?.message,
+          error: flaky ? undefined : withStep(failedStep(last?.steps ?? []), last?.error?.message),
         });
       }
     }
@@ -67,4 +67,22 @@ export default class ProxyMailQAReporter implements Reporter {
 function nameOf(test: TestCase): string {
   const [, project = '', , ...path] = test.titlePath();
   return testName(project, path);
+}
+
+// The innermost step that failed: a test.step of the test's own, or the
+// browser action or assertion inside it, such as a click or an expect.
+function failedStep(steps: readonly TestStep[]): TestStep | null {
+  for (const step of steps) {
+    if (!step.error) continue;
+    return failedStep(step.steps) ?? step;
+  }
+  return null;
+}
+
+// "At “Fill in the code” › locator.fill(…): Error: …", so the report says
+// which browser step failed as well as why.
+function withStep(step: TestStep | null, message: string | undefined): string | undefined {
+  if (!step) return message;
+  const path = step.titlePath().filter(Boolean).slice(-2).join(' › ');
+  return `At “${path}”: ${message ?? 'failed'}`;
 }

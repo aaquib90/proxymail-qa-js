@@ -1,6 +1,6 @@
 {
   "name": "proxymail-qa",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Disposable test inboxes for Playwright, Cypress and scripts: create an address, then wait for its verification code or link.",
   "license": "MIT",
   "author": "Proxy Mail QA <hello@proxymail.qa> (https://proxymail.qa)",
