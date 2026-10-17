@@ -6,11 +6,31 @@
 export interface ClientOptions {
   // Defaults to the PROXYMAIL_QA_API_KEY environment variable.
   apiKey?: string;
+  // Defaults to PROXYMAIL_QA_API_URL, then https://api.proxymail.qa.
   baseUrl?: string;
   fetch?: typeof fetch;
   // A run to add this client's calls to (startRun). Defaults to the
   // PROXYMAIL_QA_RUN environment variable, which the GitHub Action sets.
   run?: string | null;
+  // The test these calls belong to, shown beside what they saw in the run's
+  // report. forTest(name) makes a client for one test.
+  test?: string | null;
+}
+
+// A test's result for the run's report (a test runner's reporter sends these).
+export interface TestResultInput {
+  name: string;
+  status: 'passed' | 'failed' | 'flaky' | 'skipped';
+  durationMs?: number;
+  // The first lines of the failure.
+  error?: string;
+}
+
+export interface TestTotals {
+  passed: number;
+  failed: number;
+  skipped?: number;
+  flaky?: number;
 }
 
 export interface Persona {
@@ -432,15 +452,26 @@ export class ProxyMailQA {
   private readonly fetcher: typeof fetch;
   // The run this client's calls add to, if any.
   run: string | null;
+  // The test they belong to, if any.
+  readonly test: string | null;
 
   constructor(options: ClientOptions = {}) {
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
     const apiKey = options.apiKey ?? env?.PROXYMAIL_QA_API_KEY;
     if (!apiKey) throw new Error('Pass apiKey or set PROXYMAIL_QA_API_KEY. Create a key in Project settings → API keys.');
     this.apiKey = apiKey;
-    this.baseUrl = (options.baseUrl ?? 'https://api.proxymail.qa').replace(/\/+$/, '');
+    // PROXYMAIL_QA_API_URL, as the Python helper reads it, may end in /v1.
+    this.baseUrl = (options.baseUrl ?? (env?.PROXYMAIL_QA_API_URL?.trim().replace(/\/v1\/?$/, '') || 'https://api.proxymail.qa')).replace(/\/+$/, '');
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.run = options.run === undefined ? env?.PROXYMAIL_QA_RUN?.trim() || null : options.run;
+    this.test = options.test?.trim() || null;
+  }
+
+  // A client for one test: the same key and run, and every call says which
+  // test it belongs to, so the run's report shows which test each email came
+  // from. proxymail-qa/playwright's qa fixture does this for you.
+  forTest(name: string) {
+    return new ProxyMailQA({ apiKey: this.apiKey, baseUrl: this.baseUrl, fetch: this.fetcher, run: this.run, test: name });
   }
 
   // retry: this call is asked again if nothing arrives, so the run only
@@ -452,6 +483,8 @@ export class ProxyMailQA {
         Authorization: `Bearer ${this.apiKey}`,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(this.run ? { 'Proxy-Mail-QA-Run': this.run, ...(retry ? { 'Proxy-Mail-QA-Run-Retry': 'true' } : {}) } : {}),
+        // Percent-encoded: a test's name can hold characters headers can't.
+        ...(this.run && this.test ? { 'Proxy-Mail-QA-Test': encodeURIComponent(this.test) } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -829,6 +862,25 @@ export class ProxyMailQA {
 
   // A line of your own in the run, such as a test that failed for a reason
   // of its own. failed: true fails the run.
+  // A test's result in the run (a failed one fails it), from a test runner's
+  // reporter: proxymail-qa/playwright/reporter sends failed and flaky tests,
+  // then the totals.
+  recordTest(result: TestResultInput, run?: string) {
+    const id = run ?? this.requireRun();
+    return this.request<void>('POST', `/runs/${encodeURIComponent(id)}/tests`, {
+      name: result.name,
+      status: result.status,
+      duration_ms: result.durationMs,
+      error: result.error,
+    });
+  }
+
+  // How the suite went, for the top of the run's report.
+  recordTestTotals(totals: TestTotals, run?: string) {
+    const id = run ?? this.requireRun();
+    return this.request<void>('POST', `/runs/${encodeURIComponent(id)}/tests`, { totals });
+  }
+
   addRunNote(text: string, options: { failed?: boolean; address?: string; run?: string } = {}) {
     const id = options.run ?? this.requireRun();
     return this.request<void>('POST', `/runs/${encodeURIComponent(id)}/notes`, { text, failed: options.failed ?? false, address: options.address });

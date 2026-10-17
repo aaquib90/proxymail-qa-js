@@ -52,6 +52,24 @@ test('sign-up sends a working code', async ({ page, inbox }) => {
 });
 ```
 
+In a run (the GitHub Action, or `startRun` in `globalSetup`), the report can say
+which test each email came from. Use the `qa` fixture from
+`proxymail-qa/playwright`, a client that names its test in every call, and add
+the reporter, which records failed and flaky tests and the totals:
+
+```ts
+// playwright.config.ts
+reporter: [['list'], ['proxymail-qa/playwright/reporter']],
+
+// signup.spec.ts
+import { test, expect } from 'proxymail-qa/playwright';
+
+test('sign-up sends one code', async ({ page, qa }) => {
+  const { address } = await qa.createAddress();
+  // …
+});
+```
+
 ## Cypress
 
 Register tasks in `cypress.config.ts`, since Cypress runs them in Node:

@@ -1,6 +1,6 @@
 {
   "name": "proxymail-qa",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Disposable test inboxes for Playwright, Cypress and scripts: create an address, then wait for its verification code or link.",
   "license": "MIT",
   "author": "Proxy Mail QA <hello@proxymail.qa> (https://proxymail.qa)",
@@ -29,6 +29,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./playwright": {
+      "types": "./dist/playwright.d.ts",
+      "default": "./dist/playwright.js"
+    },
+    "./playwright/reporter": {
+      "types": "./dist/playwright-reporter.d.ts",
+      "default": "./dist/playwright-reporter.js"
     }
   },
   "files": [
@@ -46,7 +54,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build && npm test"
   },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "typescript": "^5.6.0",
     "vitest": "^5.0.3"
   }
