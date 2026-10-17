@@ -25,9 +25,11 @@ describe('ProxyMailQA', () => {
     expect(String(fetch.mock.calls[0]![0])).toBe(
       'https://api.test/v1/addresses/a%40mailclub.dev/code?timeout=30&service=spotify&since=1970-01-01T00%3A00%3A00.000Z',
     );
-    const links = client([Response.json({ ...MATCH, type: 'link' })]);
+    const links = client([Response.json({ ...MATCH, type: 'link' }), Response.json({ ...MATCH, type: 'link' })]);
     await links.qa.waitForLink('a@mailclub.dev', { type: ['verify', 'reset'], timeout: 5 });
     expect(String(links.fetch.mock.calls[0]![0])).toContain('/link?timeout=5&type=verify%2Creset');
+    await links.qa.waitForLink('a@mailclub.dev', { unused: true, timeout: 5 });
+    expect(String(links.fetch.mock.calls[1]![0])).toContain('&unused=true');
   });
 
   it('keeps waiting past 30 seconds by repeating the request', async () => {

@@ -165,6 +165,9 @@ export interface WaitOptions {
   // Only match email received at or after this time (Date or ISO string).
   // Default: the last 15 minutes.
   since?: Date | string;
+  // Only a code or link nobody has used yet: not returned by an earlier
+  // wait, nor opened or copied in the app.
+  unused?: boolean;
 }
 
 export type LinkType = 'verify' | 'magic_signin' | 'invite' | 'reset' | 'any';
@@ -541,6 +544,7 @@ export class ProxyMailQA {
       if (since) query.set('since', since);
       if (type) query.set('type', type);
       if (app !== undefined) query.set('app', String(app));
+      if (options.unused) query.set('unused', 'true');
       const more = Date.now() + left * 1000 < deadline - 500;
       try {
         return await this.request<Match>('GET', `/addresses/${encodeURIComponent(address)}/${kind}?${query}`, undefined, more);
