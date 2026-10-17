@@ -80,6 +80,20 @@ describe('ProxyMailQA', () => {
     expect(types).toBeTypeOf('function');
   });
 
+  it('checks an email, passing the filters, the email and the expected host', async () => {
+    const checks = {
+      address: 'a@mailclub.dev',
+      email: { id: 'e1', received_at: '2026-10-15T10:00:01Z', service: 'Acme', service_domain: 'acme.example', type: 'link', subtype: 'verify' },
+      passed: true,
+      failed: [],
+      warnings: [],
+      checks: [{ check: 'spf', status: 'pass', detail: 'The sending server is allowed to send for acme.example.' }],
+    };
+    const { fetch, qa } = client([Response.json(checks)]);
+    expect(await qa.checkEmail('a@mailclub.dev', { type: 'link', emailId: 'e1', expectHost: 'staging.acme.example' })).toEqual(checks);
+    expect(fetch.mock.calls[0]![0]).toBe('https://api.test/v1/addresses/a%40mailclub.dev/checks?email_id=e1&expect_host=staging.acme.example&type=link');
+  });
+
   it('counts emails with filters, and checks that none arrive', async () => {
     const summary = { received_at: '2026-10-15T10:00:01Z', service: 'Acme', service_domain: 'acme.example', type: 'link', subtype: 'verify', email_id: 'e1' };
     const { fetch, qa } = client([

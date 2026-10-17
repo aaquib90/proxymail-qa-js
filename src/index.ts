@@ -198,6 +198,34 @@ export interface CountOptions {
 
 export type CountSubtype = 'otp' | 'coupon' | 'verify' | 'magic_signin' | 'invite' | 'reset' | 'other' | 'any';
 
+// Checks on one received email (checkEmail): pass, fail, warn or skip, each
+// with a one-line reason. Never the email's text or its links.
+export type CheckId = 'spf' | 'dkim' | 'dmarc' | 'local_links' | 'plain_http' | 'expected_host' | 'expiry' | 'plain_text' | 'size' | 'images_only';
+
+export interface EmailCheck {
+  check: CheckId;
+  status: 'pass' | 'fail' | 'warn' | 'skip';
+  detail: string;
+}
+
+export interface EmailChecks {
+  address: string;
+  email: { id: string; received_at: string; service: string | null; service_domain: string | null; type: 'code' | 'link' | null; subtype: string | null };
+  // No check failed (warnings don't count).
+  passed: boolean;
+  failed: CheckId[];
+  warnings: CheckId[];
+  checks: EmailCheck[];
+}
+
+export interface CheckOptions extends CountOptions {
+  // The email to check, as countEmails gives it. Default: the newest that matches.
+  emailId?: string;
+  // The site its sign-in, verify, reset or invite link should go to, after
+  // any redirect, e.g. staging.example.com. Without it, that check is skipped.
+  expectHost?: string;
+}
+
 // expectNoEmail's answer: nothing matching arrived between since and until.
 export interface NoEmail {
   address: string;
@@ -342,6 +370,17 @@ export class ProxyMailQA {
   // to arrive. Without since, every email the address has received.
   countEmails(address: string, options: CountOptions = {}) {
     return this.request<EmailCount>('GET', `/addresses/${encodeURIComponent(address)}/count${countQuery(options)}`);
+  }
+
+  // Checks one email the address received: SPF, DKIM and DMARC, links to
+  // localhost or plain http, where its link goes (expectHost), a stated
+  // expiry, a plain-text part, size and image-only emails. Doesn't wait: wait
+  // for the email first. Throws ProxyMailQAError (404) when none matches.
+  checkEmail(address: string, options: CheckOptions = {}) {
+    const extra: Record<string, string> = {};
+    if (options.emailId) extra.email_id = options.emailId;
+    if (options.expectHost) extra.expect_host = options.expectHost;
+    return this.request<EmailChecks>('GET', `/addresses/${encodeURIComponent(address)}/checks${countQuery(options, extra)}`);
   }
 
   // Resolves when no matching email arrives within timeout seconds (default

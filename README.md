@@ -100,6 +100,11 @@ const { delivered, invalid } = await qa.variants(address);
 
 // After the app changes the test account's password, keep the saved one in step.
 await qa.setPassword(address, { password: 'the-new-test-password' });
+
+// Check the email that arrived: SPF, DKIM, DMARC, local or http links, where
+// its link goes, a stated expiry and more. Verdicts only, never its content.
+const result = await qa.checkEmail(address, { type: 'link', expectHost: 'staging.example.com' });
+expect(result.failed).toEqual([]);
 ```
 
 When a wait comes back empty, the error says why as far as Proxy Mail QA can
