@@ -219,6 +219,38 @@ describe('ProxyMailQA', () => {
     }
   });
 
+  it('checks an account out, extends it and always returns it', async () => {
+    const account = { address: 'pool@mailclub.dev', tags: ['premium'], checkout: { token: 't1', until: 'x' } };
+    const { fetch, qa } = client([
+      Response.json(account),
+      Response.json({ address: account.address, checkout: { token: 't1', until: 'y' } }),
+      Response.json({ ...account, tags: ['premium', 'cancelled'] }),
+    ]);
+    const body = (i: number) => JSON.parse(String((fetch.mock.calls[i] as unknown as [string, RequestInit])[1].body));
+    const result = await qa.withAccount({ tags: ['premium'], country: 'DE', maxAge: 17, minutes: 5 }, async (a) => {
+      await qa.extendCheckout(a, 20);
+      return { addTags: ['cancelled'] };
+    });
+    expect(result).toEqual({ addTags: ['cancelled'] });
+    expect(String(fetch.mock.calls[0]![0])).toBe('https://api.test/v1/addresses/checkout');
+    expect(body(0)).toEqual({ tags: ['premium'], country: 'DE', max_age: 17, minutes: 5 });
+    expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/addresses/pool%40mailclub.dev/extend');
+    expect(body(1)).toEqual({ token: 't1', minutes: 20 });
+    expect(String(fetch.mock.calls[2]![0])).toBe('https://api.test/v1/addresses/pool%40mailclub.dev/return');
+    expect(body(2)).toEqual({ token: 't1', add_tags: ['cancelled'] });
+  });
+
+  it('returns the account even when the test throws', async () => {
+    const account = { address: 'pool@mailclub.dev', checkout: { token: 't1', until: 'x' } };
+    const { fetch, qa } = client([Response.json(account), Response.json(account)]);
+    await expect(
+      qa.withAccount({}, async () => {
+        throw new Error('test failed');
+      }),
+    ).rejects.toThrow('test failed');
+    expect(String(fetch.mock.calls[1]![0])).toContain('/return');
+  });
+
   it('throws the API error with its status and code', async () => {
     const { qa } = client([Response.json({ error: 'forbidden', message: "This API key can't read saved passwords." }, { status: 403 })]);
     const error = await qa.savedPassword('a@mailclub.dev').catch((e: unknown) => e);

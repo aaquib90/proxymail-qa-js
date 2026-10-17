@@ -36,6 +36,26 @@ export interface Address {
   has_password: boolean;
   email_count: number;
   latest: Omit<Match, 'address' | 'email_id' | 'service_domain'> | null;
+  // Only while someone has it checked out of the pool.
+  checked_out_until?: string;
+}
+
+// The account pool: filters like listAddresses, and how long to hold it.
+export interface CheckoutOptions extends Omit<ListAddressesOptions, 'limit' | 'before'> {
+  // 1 to 60; 10 when left out.
+  minutes?: number;
+}
+
+// An account checked out of the pool: nobody else gets it until it's
+// returned or checkout.until passes.
+export interface CheckedOutAccount extends Address {
+  checkout: { token: string; until: string };
+}
+
+// The state a test left the account in, recorded when it's returned.
+export interface ReturnState {
+  addTags?: string[];
+  removeTags?: string[];
 }
 
 // createAddress({ password: true }) returns the password this once.
@@ -383,6 +403,53 @@ export class ProxyMailQA {
 
   getAddress(address: string) {
     return this.request<Address>('GET', `/addresses/${encodeURIComponent(address)}`);
+  }
+
+  // Checks out an account matching every filter that nobody else holds, the
+  // least recently used first, for `minutes` (default 10). Throws
+  // ProxyMailQAError 409 when every match is checked out, 404 when none
+  // match. Tag accounts with their state (verified, premium…) to make pools.
+  checkOutAccount(options: CheckoutOptions = {}) {
+    return this.request<CheckedOutAccount>('POST', '/addresses/checkout', {
+      tags: options.tags,
+      country: options.country,
+      min_age: options.minAge,
+      max_age: options.maxAge,
+      has_password: options.hasPassword,
+      search: options.search,
+      minutes: options.minutes,
+    });
+  }
+
+  // More time from now (default 10 minutes).
+  extendCheckout(account: CheckedOutAccount, minutes?: number) {
+    return this.request<{ address: string; checkout: { token: string; until: string } }>('POST', `/addresses/${encodeURIComponent(account.address)}/extend`, {
+      token: account.checkout.token,
+      minutes,
+    });
+  }
+
+  // Frees it for the next test, recording any change to its state.
+  returnAccount(account: CheckedOutAccount, state: ReturnState = {}) {
+    return this.request<Address>('POST', `/addresses/${encodeURIComponent(account.address)}/return`, {
+      token: account.checkout.token,
+      add_tags: state.addTags,
+      remove_tags: state.removeTags,
+    });
+  }
+
+  // Checks out an account, runs fn with it, and always returns it. fn can
+  // say what state it left the account in by returning { addTags, removeTags }.
+  async withAccount<T>(options: CheckoutOptions, fn: (account: CheckedOutAccount) => Promise<T>): Promise<T> {
+    const account = await this.checkOutAccount(options);
+    let state: ReturnState = {};
+    try {
+      const result = await fn(account);
+      if (result && typeof result === 'object' && ('addTags' in result || 'removeTags' in result)) state = result as ReturnState;
+      return result;
+    } finally {
+      await this.returnAccount(account, state).catch(() => {});
+    }
   }
 
   updateAddress(address: string, patch: AddressPatch) {
