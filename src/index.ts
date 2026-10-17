@@ -8,6 +8,9 @@ export interface ClientOptions {
   apiKey?: string;
   baseUrl?: string;
   fetch?: typeof fetch;
+  // A run to add this client's calls to (startRun). Defaults to the
+  // PROXYMAIL_QA_RUN environment variable, which the GitHub Action sets.
+  run?: string | null;
 }
 
 export interface Persona {
@@ -233,6 +236,44 @@ export interface NoEmail {
   until: string;
 }
 
+// A CI job or agent session as one run, with the evidence of what its calls
+// saw (startRun).
+export interface RunInput {
+  name?: string;
+  source?: 'ci' | 'agent' | 'api';
+  meta?: {
+    repository?: string;
+    branch?: string;
+    commit?: string;
+    pull_request?: number;
+    workflow?: string;
+    job_url?: string;
+    agent?: string;
+  };
+}
+
+export interface RunEvent {
+  at: string;
+  kind: 'address' | 'email' | 'missing' | 'none' | 'count' | 'checks' | 'note';
+  address: string | null;
+  failed: boolean;
+  detail: Record<string, unknown>;
+}
+
+export interface Run {
+  id: string;
+  name: string;
+  source: 'ci' | 'agent' | 'api';
+  status: 'running' | 'passed' | 'failed';
+  meta: NonNullable<RunInput['meta']>;
+  started_at: string;
+  finished_at: string | null;
+  // The run in the app.
+  url: string;
+  // Not in listRuns.
+  events?: RunEvent[];
+}
+
 // An API error. When a wait finds nothing, hint says why as far as Proxy Mail
 // QA can tell (an email provider in sandbox mode, say) and refused lists any
 // mail it turned away; both are in the message too.
@@ -268,23 +309,33 @@ export class ProxyMailQA {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly fetcher: typeof fetch;
+  // The run this client's calls add to, if any.
+  run: string | null;
 
   constructor(options: ClientOptions = {}) {
-    const fromEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.PROXYMAIL_QA_API_KEY;
-    const apiKey = options.apiKey ?? fromEnv;
+    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    const apiKey = options.apiKey ?? env?.PROXYMAIL_QA_API_KEY;
     if (!apiKey) throw new Error('Pass apiKey or set PROXYMAIL_QA_API_KEY. Create a key in Project settings → API keys.');
     this.apiKey = apiKey;
     this.baseUrl = (options.baseUrl ?? 'https://api.proxymail.qa').replace(/\/+$/, '');
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.run = options.run === undefined ? env?.PROXYMAIL_QA_RUN?.trim() || null : options.run;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // retry: this call is asked again if nothing arrives, so the run only
+  // records the last try's "nothing arrived".
+  private async request<T>(method: string, path: string, body?: unknown, retry = false): Promise<T> {
     const response = await this.fetcher(`${this.baseUrl}/v1${path}`, {
       method,
-      headers: { Authorization: `Bearer ${this.apiKey}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(this.run ? { 'Proxy-Mail-QA-Run': this.run, ...(retry ? { 'Proxy-Mail-QA-Run-Retry': 'true' } : {}) } : {}),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (response.status === 204) return undefined as T;
+    if ((response.headers.get('Content-Type') ?? '').startsWith('text/markdown') && response.ok) return (await response.text()) as T;
     const payload = (await response.json().catch(() => ({}))) as { error?: string; message?: string; hint?: string; refused?: Refusal[]; help?: string };
     if (!response.ok) {
       throw new ProxyMailQAError(response.status, payload.error ?? 'error', payload.message ?? `Request failed with ${response.status}`, payload.hint, payload.refused, payload.help);
@@ -394,7 +445,8 @@ export class ProxyMailQA {
     for (;;) {
       const left = Math.max(0, Math.min(MAX_WAIT_SECONDS, Math.ceil((deadline - Date.now()) / 1000)));
       const query = countQuery({ ...options, since }, { timeout: String(left) });
-      const result = await this.request<NoEmail>('GET', `/addresses/${encodeURIComponent(address)}/none${query}`);
+      const more = Date.now() + left * 1000 < deadline - 500;
+      const result = await this.request<NoEmail>('GET', `/addresses/${encodeURIComponent(address)}/none${query}`, undefined, more);
       // The server's since, so later requests watch from the same moment
       // whatever this machine's clock says.
       since = result.since;
@@ -433,6 +485,51 @@ export class ProxyMailQA {
     );
   }
 
+  // Starts a run: a CI job or agent session whose calls add what they saw
+  // (addresses, emails and how long after since, codes, a link's site and
+  // path, checks, and emails that never came). This client's later calls add
+  // to it; to add calls from other processes, pass them its id as
+  // PROXYMAIL_QA_RUN. The GitHub Action starts and finishes one for you.
+  async startRun(input: RunInput = {}): Promise<Run> {
+    const run = await this.request<Run>('POST', '/runs', input);
+    this.run = run.id;
+    return run;
+  }
+
+  getRun(id = this.requireRun()) {
+    return this.request<Run>('GET', `/runs/${encodeURIComponent(id)}`);
+  }
+
+  // The report in Markdown, for a pull request comment or a job summary.
+  runReport(id = this.requireRun()) {
+    return this.request<string>('GET', `/runs/${encodeURIComponent(id)}?format=markdown`);
+  }
+
+  listRuns(limit?: number) {
+    return this.request<{ runs: Run[] }>('GET', `/runs${limit ? `?limit=${limit}` : ''}`).then((r) => r.runs);
+  }
+
+  // A line of your own in the run, such as a test that failed for a reason
+  // of its own. failed: true fails the run.
+  addRunNote(text: string, options: { failed?: boolean; address?: string; run?: string } = {}) {
+    const id = options.run ?? this.requireRun();
+    return this.request<void>('POST', `/runs/${encodeURIComponent(id)}/notes`, { text, failed: options.failed ?? false, address: options.address });
+  }
+
+  // Passed unless an email was missing, came when none should have, failed
+  // a check, or failed says your tests failed.
+  async finishRun(options: { failed?: boolean; run?: string } = {}): Promise<Run> {
+    const id = options.run ?? this.requireRun();
+    const run = await this.request<Run>('POST', `/runs/${encodeURIComponent(id)}/finish`, { failed: options.failed ?? false });
+    if (this.run === id) this.run = null;
+    return run;
+  }
+
+  private requireRun(): string {
+    if (!this.run) throw new Error('No run: call startRun first, or set PROXYMAIL_QA_RUN.');
+    return this.run;
+  }
+
   private async wait(address: string, kind: 'code' | 'link', options: WaitOptions, type = '', app?: boolean): Promise<Match> {
     const total = options.timeout ?? MAX_WAIT_SECONDS;
     const deadline = Date.now() + total * 1000;
@@ -444,8 +541,9 @@ export class ProxyMailQA {
       if (since) query.set('since', since);
       if (type) query.set('type', type);
       if (app !== undefined) query.set('app', String(app));
+      const more = Date.now() + left * 1000 < deadline - 500;
       try {
-        return await this.request<Match>('GET', `/addresses/${encodeURIComponent(address)}/${kind}?${query}`);
+        return await this.request<Match>('GET', `/addresses/${encodeURIComponent(address)}/${kind}?${query}`, undefined, more);
       } catch (error) {
         const timedOut = error instanceof ProxyMailQAError && error.status === 404 && TIMED_OUT.test(error.message);
         if (!timedOut || Date.now() >= deadline - 500) throw error;

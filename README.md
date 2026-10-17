@@ -105,6 +105,13 @@ await qa.setPassword(address, { password: 'the-new-test-password' });
 // its link goes, a stated expiry and more. Verdicts only, never its content.
 const result = await qa.checkEmail(address, { type: 'link', expectHost: 'staging.example.com' });
 expect(result.failed).toEqual([]);
+
+// A run: this client's calls add what they saw, for a report on the pull
+// request. In GitHub Actions, the Proxy Mail QA action does this for you and
+// the client picks the run up from PROXYMAIL_QA_RUN.
+await qa.startRun({ name: 'Sign-up tests' });
+// …the tests…
+await qa.finishRun({ failed: testsFailed });
 ```
 
 When a wait comes back empty, the error says why as far as Proxy Mail QA can

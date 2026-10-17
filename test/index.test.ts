@@ -167,6 +167,56 @@ describe('ProxyMailQA', () => {
     );
   });
 
+  it('adds its calls to a run once one is started, and reports it', async () => {
+    const run = { id: 'run-1', name: 'Sign-up tests', status: 'running', url: 'https://app.proxymail.qa/runs/run-1' };
+    const { fetch, qa } = client([
+      Response.json(run, { status: 201 }),
+      Response.json({ address: 'a@mailclub.dev' }, { status: 201 }),
+      new Response('### ✅ Sign-up tests passed\n', { headers: { 'Content-Type': 'text/markdown; charset=utf-8' } }),
+      new Response(null, { status: 204 }),
+      Response.json({ ...run, status: 'failed' }),
+    ]);
+    const headers = (i: number) => (fetch.mock.calls[i] as unknown as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(qa.run).toBeNull();
+    await qa.startRun({ name: 'Sign-up tests', source: 'ci', meta: { branch: 'main' } });
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ name: 'Sign-up tests', source: 'ci', meta: { branch: 'main' } });
+    expect(headers(0)['Proxy-Mail-QA-Run']).toBeUndefined();
+    await qa.createAddress();
+    expect(headers(1)['Proxy-Mail-QA-Run']).toBe('run-1');
+    expect(await qa.runReport()).toBe('### ✅ Sign-up tests passed\n');
+    expect(String(fetch.mock.calls[2]![0])).toBe('https://api.test/v1/runs/run-1?format=markdown');
+    await qa.addRunNote('Checkout failed', { failed: true });
+    expect(JSON.parse(String((fetch.mock.calls[3] as unknown as [string, RequestInit])[1].body))).toEqual({ text: 'Checkout failed', failed: true });
+    expect((await qa.finishRun({ failed: true })).status).toBe('failed');
+    expect(String(fetch.mock.calls[4]![0])).toBe('https://api.test/v1/runs/run-1/finish');
+    expect(qa.run).toBeNull();
+    await expect(qa.finishRun()).rejects.toThrow(/No run/);
+  });
+
+  it('takes the run from PROXYMAIL_QA_RUN, and marks waits it will repeat', async () => {
+    vi.stubEnv('PROXYMAIL_QA_RUN', 'run-ci');
+    vi.useFakeTimers({ now: Date.parse('2026-10-17T10:00:00Z') });
+    try {
+      const answers = [Response.json({ error: 'not_found', message: 'No code arrived within 30 seconds.' }, { status: 404 }), Response.json(MATCH)];
+      const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+        // Each request holds for as long as it asked to.
+        vi.setSystemTime(Date.now() + Number(new URL(url).searchParams.get('timeout')) * 1000);
+        return answers.shift()!;
+      });
+      const qa = new ProxyMailQA({ apiKey: 'qa_test', baseUrl: 'https://api.test', fetch: fetch as unknown as typeof globalThis.fetch });
+      expect(qa.run).toBe('run-ci');
+      await qa.waitForCode('a@mailclub.dev', { timeout: 45 });
+      const sent = fetch.mock.calls.map((call) => (call as unknown as [string, RequestInit])[1].headers as Record<string, string>);
+      expect(sent.map((h) => h['Proxy-Mail-QA-Run'])).toEqual(['run-ci', 'run-ci']);
+      // The first try isn't the last, so its "nothing arrived" isn't evidence.
+      expect(sent.map((h) => h['Proxy-Mail-QA-Run-Retry'])).toEqual(['true', undefined]);
+      expect(new ProxyMailQA({ apiKey: 'qa_test', run: null }).run).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('throws the API error with its status and code', async () => {
     const { qa } = client([Response.json({ error: 'forbidden', message: "This API key can't read saved passwords." }, { status: 403 })]);
     const error = await qa.savedPassword('a@mailclub.dev').catch((e: unknown) => e);
