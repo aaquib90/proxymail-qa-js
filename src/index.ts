@@ -58,6 +58,25 @@ export interface Address {
   latest: Omit<Match, 'address' | 'email_id' | 'service_domain'> | null;
   // Only while someone has it checked out of the pool.
   checked_out_until?: string;
+  // Where it's used, when recorded: the site's host and the environment.
+  site?: string;
+  environment?: string;
+}
+
+// The saved test account to sign in with (signInAccount), and its password.
+export interface SignInAccount extends Address {
+  password: string;
+  // Whether it had been used on this site before.
+  used_on_site: boolean;
+}
+
+export interface SignInOptions {
+  // The host or page URL of the sign-in form, such as staging.example.com.
+  site?: string;
+  // Only accounts for this environment (or for none), such as staging.
+  environment?: string;
+  // Only accounts with every one of these tags.
+  tags?: string[];
 }
 
 // The account pool: filters like listAddresses, and how long to hold it.
@@ -207,6 +226,10 @@ export interface CreateAddressInput {
   dateOfBirth?: string;
   // Where the persona lives, as an ISO 3166-1 alpha-2 code such as GB.
   country?: string;
+  // Where the account is used: the host or a page URL of the app under test
+  // (kept as the host), and the environment, such as staging or local.
+  site?: string;
+  environment?: string;
 }
 
 export interface ListAddressesOptions {
@@ -226,6 +249,9 @@ export interface ListAddressesOptions {
   hasPassword?: boolean;
   // Part of the address, label, notes, name or username.
   search?: string;
+  // Used on this site (a host or page URL), or in this environment.
+  site?: string;
+  environment?: string;
 }
 
 export interface AddressPatch {
@@ -515,6 +541,8 @@ export class ProxyMailQA {
       age: input.age,
       date_of_birth: input.dateOfBirth,
       country: input.country,
+      site: input.site,
+      environment: input.environment,
     });
   }
 
@@ -543,6 +571,8 @@ export class ProxyMailQA {
       age: options.age,
       date_of_birth: options.dateOfBirth,
       country: options.country,
+      site: options.site,
+      environment: options.environment,
     });
   }
 
@@ -558,7 +588,28 @@ export class ProxyMailQA {
     if (options.maxAge !== undefined) query.set('max_age', String(options.maxAge));
     if (options.hasPassword !== undefined) query.set('has_password', String(options.hasPassword));
     if (options.search) query.set('search', options.search);
+    if (options.site) query.set('site', options.site);
+    if (options.environment) query.set('environment', options.environment);
     return this.request<Address[]>('GET', `/addresses${query.size ? `?${query}` : ''}`);
+  }
+
+  // The saved test account to sign in with, and its password, in one call:
+  // one with a saved password and every tag given, used on this site first,
+  // then the one that got mail most recently. null when none fits. Needs a
+  // key created with "Can read saved passwords"; every reveal is logged.
+  async signInAccount(options: SignInOptions = {}): Promise<SignInAccount | null> {
+    try {
+      return await this.request<SignInAccount>('POST', '/addresses/sign-in', { site: options.site, environment: options.environment, tags: options.tags });
+    } catch (err) {
+      if (err instanceof ProxyMailQAError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  // Marks a host (localhost:3000, say) as a dev environment of the project:
+  // links to it then pass checkEmail's local-links check instead of failing.
+  markDevHost(host: string) {
+    return this.request<{ dev_hosts: string[] }>('POST', '/project/dev-hosts', { host });
   }
 
   getAddress(address: string) {
@@ -577,6 +628,8 @@ export class ProxyMailQA {
       max_age: options.maxAge,
       has_password: options.hasPassword,
       search: options.search,
+      site: options.site,
+      environment: options.environment,
       minutes: options.minutes,
     });
   }

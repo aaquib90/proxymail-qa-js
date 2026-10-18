@@ -107,6 +107,13 @@ await qa.createAddress({ persona: true, age: 'under13', country: 'GB' });
 // Find a test account made earlier: an under-18 in GB with a saved password.
 const [teen] = await qa.listAddresses({ tags: ['age-gate'], country: 'GB', maxAge: 17, hasPassword: true });
 
+// Sign in again as a saved test account: the one used on this site first, with
+// its password (needs a key with "Can read saved passwords"); null if none fits.
+const account = await qa.signInAccount({ site: 'staging.example.com', tags: ['verified'] });
+
+// Testing on localhost? Links to it then pass checkEmail's local-links check.
+await qa.markDevHost('localhost:3000');
+
 // The link that opens a mobile app (myapp://…) when the email also has a web one.
 const { value: appLink } = await qa.waitForLink(address, { app: true });
 

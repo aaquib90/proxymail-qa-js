@@ -174,6 +174,30 @@ describe('ProxyMailQA', () => {
     );
   });
 
+  it('records where an address is used, finds by it, and signs in as a saved account', async () => {
+    const { fetch, qa } = client([
+      Response.json({ address: 'a@mailclub.dev', site: 'localhost:3000', environment: 'local' }, { status: 201 }),
+      Response.json([]),
+      Response.json({ address: 'a@mailclub.dev', password: 'Hunter2!', used_on_site: true }),
+      Response.json({ error: 'not_found', message: 'No saved test account with a password fits.' }, { status: 404 }),
+      Response.json({ dev_hosts: ['localhost:3000'] }),
+    ]);
+    await qa.createAddress({ site: 'http://localhost:3000/sign-up', environment: 'local' });
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ site: 'http://localhost:3000/sign-up', environment: 'local' });
+    await qa.listAddresses({ site: 'localhost:3000', environment: 'local' });
+    expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/addresses?site=localhost%3A3000&environment=local');
+
+    const account = await qa.signInAccount({ site: 'localhost:3000', tags: ['verified'] });
+    expect(account).toMatchObject({ password: 'Hunter2!', used_on_site: true });
+    const [url, init] = fetch.mock.calls[2] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.test/v1/addresses/sign-in');
+    expect(JSON.parse(String(init.body))).toEqual({ site: 'localhost:3000', tags: ['verified'] });
+    expect(await qa.signInAccount()).toBeNull();
+
+    expect(await qa.markDevHost('localhost:3000')).toEqual({ dev_hosts: ['localhost:3000'] });
+    expect(String(fetch.mock.calls[4]![0])).toBe('https://api.test/v1/project/dev-hosts');
+  });
+
   it('adds its calls to a run once one is started, and reports it', async () => {
     const run = { id: 'run-1', name: 'Sign-up tests', status: 'running', url: 'https://app.proxymail.qa/runs/run-1' };
     const { fetch, qa } = client([
