@@ -32,6 +32,32 @@ describe('ProxyMailQA', () => {
     expect(String(links.fetch.mock.calls[1]![0])).toContain('&unused=true');
   });
 
+  it('waits for a coupon with type, and checks how soon an email came', async () => {
+    const { fetch, qa } = client([
+      Response.json({ ...MATCH, subtype: 'coupon', value: 'WELCOME20', discount: '20% off', valid_until: '2026-10-31', after_seconds: 212 }),
+      Response.json({ address: 'a@mailclub.dev', passed: true, failed: [], warnings: [], checks: [] }),
+    ]);
+    const coupon = await qa.waitForCode('a@mailclub.dev', { type: 'coupon', since: new Date(0), timeout: 10 });
+    expect(coupon).toMatchObject({ value: 'WELCOME20', discount: '20% off', valid_until: '2026-10-31', after_seconds: 212 });
+    expect(String(fetch.mock.calls[0]![0])).toContain('&type=coupon');
+    await qa.checkEmail('a@mailclub.dev', { since: new Date(0), expectWithin: '5m' });
+    expect(String(fetch.mock.calls[1]![0])).toContain('expect_within=5m');
+  });
+
+  it('marks an address unsubscribed and subscribed again, and checks what came after', async () => {
+    const watch = { id: 'w1', sender: 'acme.example', service: 'Acme', unsubscribed_at: '1970-01-01T00:00:00.000Z', via: 'api', watching: true, ended_at: null, after_unsubscribe: [] };
+    const { fetch, qa } = client([Response.json(watch), Response.json({ ...watch, watching: false }), Response.json({ address: 'a@mailclub.dev', passed: true, watches: [watch] })]);
+    await qa.markUnsubscribed('a@mailclub.dev', { service: 'acme.example', at: new Date(0) });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.test/v1/addresses/a%40mailclub.dev/unsubscribed');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ service: 'acme.example', at: '1970-01-01T00:00:00.000Z' });
+    expect((await qa.markResubscribed('a@mailclub.dev', { service: 'acme.example' })).watching).toBe(false);
+    expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/addresses/a%40mailclub.dev/unsubscribed?service=acme.example');
+    expect((fetch.mock.calls[1]![1] as RequestInit).method).toBe('DELETE');
+    expect((await qa.checkUnsubscribe('a@mailclub.dev')).passed).toBe(true);
+  });
+
   it('keeps waiting past 30 seconds by repeating the request', async () => {
     vi.useFakeTimers();
     const timeout = () => Response.json({ error: 'not_found', message: 'No code arrived within 30 seconds.' }, { status: 404 });

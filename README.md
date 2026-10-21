@@ -1,8 +1,30 @@
 # proxymail-qa
 
-Disposable test inboxes for Playwright, Cypress and scripts. Create an address,
-sign up with it in the app you're testing, and get the verification code or
-link from the email in one call that waits for it.
+Test the emails your app sends, end to end, from Playwright, Cypress,
+Puppeteer, Jest, Vitest or any Node script. Create a disposable address, sign
+up with it, and get the verification code or link in one call that waits for
+it. Then:
+
+- check an email was sent exactly once, or not at all
+- check each email: SPF, DKIM and DMARC, links to localhost or the wrong host,
+  a stated expiry, plain text, language and phone layout
+- sign up with a test persona (name, date of birth, country) and a saved
+  password, or an unusual address variant
+- borrow a verified test account for sign-in tests and give it back
+- wait for a coupon, record whether checkout took it, and catch an offer
+  given twice to versions of one address
+- test unsubscribing: any marketing email from that sender afterwards fails
+- check marketing emails: unsubscribe headers, a spam score and the consent
+  rules where the persona lives
+- check a welcome series or drip campaign came in order and on time
+- find out why an email didn't arrive
+- group tests into a run whose report says which test each email came from
+
+Checkout results, offers given twice, unsubscribing, consent, welcome series,
+the marketing checks and the spam score are in
+[Labs](https://proxymail.qa/docs/labs) for now: the key's creator switches
+them on in the app under Account settings → Labs. Until then those methods
+throw with a 403 that says so, and `checkEmail` leaves those checks out.
 
 Get an API key in [app.proxymail.qa](https://app.proxymail.qa) → Project
 settings → API keys (the Free plan includes it), and set it as
@@ -111,6 +133,10 @@ const [teen] = await qa.listAddresses({ tags: ['age-gate'], country: 'GB', maxAg
 // its password (needs a key with "Can read saved passwords"); null if none fits.
 const account = await qa.signInAccount({ site: 'staging.example.com', tags: ['verified'] });
 
+// How many addresses this project can still create: Free has 500 in total
+// and 50 a day (limit null on Team). Past it, createAddress throws a 402.
+const { addresses } = await qa.project();
+
 // Testing on localhost? Links to it then pass checkEmail's local-links check.
 await qa.markDevHost('localhost:3000');
 
@@ -158,6 +184,18 @@ await qa.withAccount(
     // …the test…
   },
 );
+
+// Offers (Labs): wait for the coupon (offers can take minutes), apply it at
+// checkout on staging with test payments, then record what the app said.
+const coupon = await qa.waitForCode(address, { type: 'coupon', timeout: 600 });
+await qa.recordCouponResult(address, 'accepted', { code: coupon.value });
+
+// Unsubscribing (Labs): after the test unsubscribes in the app (Proxy Mail
+// QA never opens the link), marketing from that sender fails; receipts can
+// still come.
+await qa.markUnsubscribed(address);
+await qa.expectNoEmail(address, { category: 'marketing', since: new Date(), timeout: 300 });
+const { passed } = await qa.checkUnsubscribe(address);
 
 // A run: this client's calls add what they saw, for a report on the pull
 // request. In GitHub Actions, the Proxy Mail QA action does this for you and

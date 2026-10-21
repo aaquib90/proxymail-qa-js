@@ -131,6 +131,7 @@ export interface FormValue {
     | 'birth_month'
     | 'birth_year'
     | 'country'
+    | 'marketing_consent'
     | 'other';
   // What to type, or the option's value to pick. Null to leave it to you.
   value: string | null;
@@ -207,6 +208,12 @@ export interface Match {
   received_at: string;
   expires_at: string | null;
   email_id: string;
+  // With since: how many seconds after it the email arrived.
+  after_seconds?: number;
+  // Coupons, when the email states them: "20% off", and the date it's valid
+  // until (YYYY-MM-DD).
+  discount?: string | null;
+  valid_until?: string | null;
 }
 
 export interface CreateAddressInput {
@@ -317,7 +324,12 @@ export interface WaitOptions {
   unused?: boolean;
 }
 
-export type LinkType = 'verify' | 'magic_signin' | 'invite' | 'reset' | 'any';
+// waitForCode: a sign-in code (the default), a coupon or promo code, or either.
+export type CodeType = 'otp' | 'coupon' | 'any';
+
+// unsubscribe: the email's own unsubscribe or preferences link;
+// list_unsubscribe: the List-Unsubscribe header's (Gmail's Unsubscribe button).
+export type LinkType = 'verify' | 'magic_signin' | 'invite' | 'reset' | 'unsubscribe' | 'list_unsubscribe' | 'any';
 
 // An email without its content: when it came, who sent it and what its main
 // code or link was for.
@@ -328,6 +340,15 @@ export interface EmailSummary {
   type: 'code' | 'link' | null;
   subtype: string | null;
   email_id: string;
+  // With since: how many seconds after it the email arrived.
+  after_seconds?: number;
+  // What kind of email; null for one from before types were recorded.
+  category?: EmailCategory | null;
+  // Seconds since the previous matching email; null for the first.
+  gap_seconds?: number | null;
+  // Up to 5 attachments' types, extensions and sizes (never their names).
+  attachments?: Array<{ type: string; extension?: string; size: number; method?: string }>;
+  attachment_count?: number | null;
 }
 
 export interface EmailCount {
@@ -347,9 +368,14 @@ export interface CountOptions {
   // (verify, magic sign-in, invite or reset, unless subtype says).
   type?: 'code' | 'link';
   subtype?: CountSubtype | CountSubtype[];
+  // Only sign-in emails (auth), receipts and notices (transactional), or
+  // offers and newsletters (marketing). For "an unsubscribed user gets no
+  // marketing", use marketing: receipts should still arrive.
+  category?: EmailCategory;
 }
 
-export type CountSubtype = 'otp' | 'coupon' | 'verify' | 'magic_signin' | 'invite' | 'reset' | 'other' | 'any';
+export type EmailCategory = 'auth' | 'transactional' | 'marketing';
+export type CountSubtype = 'otp' | 'coupon' | 'verify' | 'magic_signin' | 'invite' | 'reset' | 'other' | 'unsubscribe' | 'list_unsubscribe' | 'any';
 
 // Checks on one received email (checkEmail): pass, fail, warn or skip, each
 // with a one-line reason. Never the email's text or its links.
@@ -361,17 +387,144 @@ export type CheckId =
   | 'plain_http'
   | 'expected_host'
   | 'expiry'
+  | 'coupon_expiry'
   | 'plain_text'
   | 'size'
   | 'images_only'
   | 'layout'
   | 'expected_text'
-  | 'language';
+  | 'language'
+  | 'arrival_time'
+  | 'expected_attachment'
+  | 'list_unsubscribe'
+  | 'one_click_unsubscribe'
+  | 'unsubscribe_link'
+  | 'preheader'
+  | 'after_unsubscribe'
+  | 'offer_reuse'
+  | 'coupon_result'
+  | 'marketing_consent'
+  | 'prechecked_consent'
+  | 'double_opt_in'
+  | 'unsubscribe_deadline'
+  | 'postal_address'
+  | 'sender_identity'
+  | 'minor_marketing'
+  | 'harmful_attachment'
+  | 'spam_risk'
+  | 'misleading_subject'
+  | 'ad_label';
 
 export interface EmailCheck {
   check: CheckId;
   status: 'pass' | 'fail' | 'warn' | 'skip';
   detail: string;
+  // spam_risk only: the spam score out of 10 (5 or more: likely rejected or
+  // sent to spam), and the markers that make it up with their points.
+  score?: number;
+  markers?: Array<{ id: string; points: number }>;
+}
+
+// An unsubscribe the test recorded (markUnsubscribed), and the marketing
+// emails from that sender that came after it: ids and times only.
+export interface UnsubscribeWatch {
+  id: string;
+  sender: string;
+  service: string | null;
+  unsubscribed_at: string;
+  via: 'app' | 'extension' | 'agent' | 'api';
+  // Marketing within this long after unsubscribing doesn't count.
+  grace_seconds?: number;
+  watching: boolean;
+  ended_at: string | null;
+  after_unsubscribe: Array<{ email_id: string; received_at: string; after_seconds: number }>;
+}
+
+// What an address agreed to at sign-up; the marketing rules by the persona's
+// country read it.
+export interface Consent {
+  address: string;
+  marketing: 'opted_in' | 'declined' | null;
+  prechecked: boolean | null;
+  at: string | null;
+  double_opt_in: 'confirmed' | 'pending' | null;
+  double_opt_in_at: string | null;
+  via: string | null;
+  country: string | null;
+}
+
+// A coupon and what checkout did each time a test applied it, with the
+// coupon_result verdict on its email.
+export interface CouponResults {
+  code: string;
+  email_id: string;
+  discount: string | null;
+  valid_until: string | null;
+  results: Array<{ result: 'accepted' | 'rejected' | 'error'; message: string | null; discount_applied: string | null; one_time: boolean; at: string; via: string }>;
+  check: EmailCheck | null;
+}
+
+// A step of a welcome series or drip campaign: what to look for, and when.
+export interface SequenceStep {
+  // A phrase its subject contains.
+  subject?: string;
+  category?: EmailCategory;
+  type?: 'code' | 'link';
+  // When it should come after since ('10m', '1d', '7d', or seconds), and how
+  // far off still passes.
+  after?: string | number;
+  within?: string | number;
+}
+
+export interface SequenceResult {
+  address: string;
+  since: string;
+  passed: boolean;
+  // False while a step is still waiting for its time.
+  done: boolean;
+  steps: Array<{
+    step: number;
+    status: 'pass' | 'early' | 'late' | 'missing' | 'waiting';
+    email_id: string | null;
+    received_at: string | null;
+    expected_at: string | null;
+    off_seconds: number | null;
+    detail: string;
+  }>;
+}
+
+// Each sender's coupons at an address and which version of it (plain,
+// capitals, +tag) each went to; reused when two or more versions got one.
+export interface Offers {
+  address: string;
+  passed: boolean;
+  offers: Array<{
+    sender: string;
+    service: string | null;
+    reused: boolean;
+    variants: string[];
+    same_code: boolean;
+    coupons: Array<{ variant: string; code: string; discount: string | null; valid_until: string | null; received_at: string; email_id: string }>;
+  }>;
+}
+
+export interface AddressAllowance {
+  // True on Free.
+  limited: boolean;
+  // Created while the space was on Free, counted from when the 500 limit began.
+  used: number;
+  // 500 on Free; null for no limit.
+  limit: number | null;
+  left: number | null;
+  // Created today (UTC), and the daily limit (null for none).
+  today: number;
+  per_day_limit: number | null;
+}
+
+export interface UnsubscribeStatus {
+  address: string;
+  passed: boolean;
+  watches: UnsubscribeWatch[];
 }
 
 export interface EmailChecks {
@@ -395,6 +548,12 @@ export interface CheckOptions extends CountOptions {
   expectText?: string[];
   // The language it should be in, such as de or pt-BR.
   expectLanguage?: string;
+  // With since: how soon after it the email should arrive, in seconds or as
+  // "90s", "5m", "2h" (arrival_time).
+  expectWithin?: number | string;
+  // Attachments it should have: a type (application/pdf, image/*), an
+  // extension (.ics) or a file name with * (invoice-*.pdf).
+  expectAttachment?: string[];
 }
 
 // expectNoEmail's answer: nothing matching arrived between since and until.
@@ -468,6 +627,7 @@ function countQuery(options: CountOptions, extra: Record<string, string> = {}) {
   if (options.type) query.set('type', options.type);
   const subtype = [options.subtype ?? []].flat().join(',');
   if (subtype) query.set('subtype', subtype);
+  if (options.category) query.set('category', options.category);
   return query.size ? `?${query}` : '';
 }
 
@@ -524,8 +684,26 @@ export class ProxyMailQA {
     return payload as T;
   }
 
+  // The key's project: its mail domains, prefix and limits. addresses says
+  // how many its space has used and may still create (Free: 500 in total and
+  // 50 a day; Team: no limit, so limit is null). Past it, createAddress
+  // throws ProxyMailQAError with status 402 and code plan_required.
   project() {
-    return this.request<Record<string, unknown>>('GET', '/project');
+    return this.request<Record<string, unknown> & { addresses?: AddressAllowance }>('GET', '/project');
+  }
+
+  // Changes the key's project, as in Project settings: its name, website,
+  // environments, email prefix or default mail domain (one of project()'s
+  // mail_domains). Only the fields given change; null clears website or
+  // emailPrefix. Needs the project's lead (or an organisation owner or
+  // admin), and is in the project's activity log.
+  updateProject(patch: { name?: string; website?: string | null; environments?: string[]; emailPrefix?: string | null; mailDomain?: string }) {
+    const { emailPrefix, mailDomain, ...rest } = patch;
+    return this.request<Record<string, unknown> & { addresses?: AddressAllowance }>('PATCH', '/project', {
+      ...rest,
+      ...(emailPrefix !== undefined ? { email_prefix: emailPrefix } : {}),
+      ...(mailDomain !== undefined ? { mail_domain: mailDomain } : {}),
+    });
   }
 
   createAddress(input: CreateAddressInput & { password: true }): Promise<CreatedAddressWithPassword>;
@@ -793,8 +971,12 @@ export class ProxyMailQA {
 
   // Waits for a verification or login code; throws ProxyMailQAError (404) if
   // none arrives in time.
-  waitForCode(address: string, options: WaitOptions = {}) {
-    return this.wait(address, 'code', options);
+  // The newest sign-in or verification code; with type: 'coupon', the
+  // newest coupon or promo code, with its discount and valid-until date when
+  // the email states them. Offers often come minutes later: give a longer
+  // timeout (it repeats the request).
+  waitForCode(address: string, options: WaitOptions & { type?: CodeType } = {}) {
+    return this.wait(address, 'code', options, options.type && options.type !== 'otp' ? options.type : '');
   }
 
   // Waits for a verify, magic sign-in, invite or reset link. When an email has
@@ -834,8 +1016,10 @@ export class ProxyMailQA {
     if (options.emailId) extra.email_id = options.emailId;
     if (options.expectHost) extra.expect_host = options.expectHost;
     if (options.expectLanguage) extra.expect_language = options.expectLanguage;
+    if (options.expectWithin !== undefined) extra.expect_within = String(options.expectWithin);
     let query = countQuery(options, extra);
     for (const phrase of options.expectText ?? []) query += `${query ? '&' : '?'}expect_text=${encodeURIComponent(phrase)}`;
+    for (const pattern of options.expectAttachment ?? []) query += `${query ? '&' : '?'}expect_attachment=${encodeURIComponent(pattern)}`;
     return this.request<EmailChecks>('GET', `/addresses/${encodeURIComponent(address)}/checks${query}`);
   }
 
@@ -857,6 +1041,96 @@ export class ProxyMailQA {
       since = result.since;
       if (Date.now() >= deadline - 500) return { address: result.address, since: result.since, until: result.until };
     }
+  }
+
+  // markUnsubscribed to offers below are Marketing and offer emails, in Labs:
+  // the key's creator switches it on in Account settings → Labs. Until then
+  // they throw a 403 that says so.
+
+  // Records that the address unsubscribed from a sender, after the test did
+  // it in its own browser (Proxy Mail QA never opens unsubscribe links). Any
+  // later marketing email from that sender fails after_unsubscribe, however
+  // long after. Name the sender with emailId or service (a name or domain);
+  // with neither, the newest marketing email decides. at backdates it.
+  // grace ('2h', '1d', or seconds; up to 30 days): marketing within it after
+  // unsubscribing doesn't count, for mail already on its way.
+  markUnsubscribed(address: string, options: { emailId?: string; service?: string; at?: Date | string; grace?: string | number } = {}) {
+    return this.request<UnsubscribeWatch>('POST', `/addresses/${encodeURIComponent(address)}/unsubscribed`, {
+      email_id: options.emailId,
+      service: options.service,
+      at: options.at instanceof Date ? options.at.toISOString() : options.at,
+      grace: options.grace,
+    });
+  }
+
+  // The address subscribed again: ends the watch for that sender (the only
+  // one, when there's one).
+  markResubscribed(address: string, options: { emailId?: string; service?: string } = {}) {
+    const query = new URLSearchParams({ ...(options.service ? { service: options.service } : {}), ...(options.emailId ? { email_id: options.emailId } : {}) });
+    return this.request<UnsubscribeWatch>('DELETE', `/addresses/${encodeURIComponent(address)}/unsubscribed${query.size ? `?${query}` : ''}`);
+  }
+
+  // Each unsubscribe and the marketing emails that came after it, by id and
+  // how long after; passed is false when any came.
+  checkUnsubscribe(address: string) {
+    return this.request<UnsubscribeStatus>('GET', `/addresses/${encodeURIComponent(address)}/unsubscribed`);
+  }
+
+  // Records what the address agreed to at sign-up: marketing (opted_in or
+  // declined), prechecked (the box was ticked when the form loaded) and
+  // doubleOptIn (confirmed or pending). Only what's given changes. checkEmail
+  // then judges marketing email by the rules where the persona lives.
+  recordConsent(
+    address: string,
+    consent: { marketing?: 'opted_in' | 'declined' | null; prechecked?: boolean; doubleOptIn?: 'confirmed' | 'pending' | null; at?: Date | string },
+  ) {
+    return this.request<Consent>('PUT', `/addresses/${encodeURIComponent(address)}/consent`, {
+      marketing: consent.marketing,
+      prechecked: consent.prechecked,
+      double_opt_in: consent.doubleOptIn,
+      at: consent.at instanceof Date ? consent.at.toISOString() : consent.at,
+    });
+  }
+
+  consent(address: string) {
+    return this.request<Consent>('GET', `/addresses/${encodeURIComponent(address)}/consent`);
+  }
+
+  // After applying a coupon at checkout (on staging with test payments: never
+  // real card details), records what the app did: accepted, rejected or an
+  // error, with its message. The answer's check is the coupon_result verdict:
+  // it fails a coupon accepted after its end date, for an offer already given
+  // to another version of the address, or twice when oneTime.
+  recordCouponResult(
+    address: string,
+    result: 'accepted' | 'rejected' | 'error',
+    options: { code?: string; emailId?: string; message?: string; oneTime?: boolean; discountApplied?: string; at?: Date | string } = {},
+  ) {
+    return this.request<CouponResults>('POST', `/addresses/${encodeURIComponent(address)}/coupon-result`, {
+      result,
+      code: options.code,
+      email_id: options.emailId,
+      message: options.message,
+      one_time: options.oneTime,
+      discount_applied: options.discountApplied,
+      at: options.at instanceof Date ? options.at.toISOString() : options.at,
+    });
+  }
+
+  // Whether a welcome series or drip campaign came in order and on time after
+  // since: each step answers pass, early, late, missing or waiting.
+  checkSequence(address: string, steps: SequenceStep[], options: { since?: Date | string } = {}) {
+    return this.request<SequenceResult>('POST', `/addresses/${encodeURIComponent(address)}/sequence`, {
+      steps,
+      since: options.since instanceof Date ? options.since.toISOString() : options.since,
+    });
+  }
+
+  // Each sender's coupons and which version of the address each went to.
+  // Mail to name+promo1@… and NAME@… reaches one inbox, so passed is false
+  // when an offer reached two or more of them: one person got it twice.
+  offers(address: string) {
+    return this.request<Offers>('GET', `/addresses/${encodeURIComponent(address)}/offers`);
   }
 
   // What reached the address and what was refused, without waiting: for when
