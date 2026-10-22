@@ -149,6 +149,11 @@ const [latest] = await qa.messages(address, { includeHtml: true, limit: 1 });
 // Unusual but valid versions of the address, and invalid ones to reject.
 const { delivered, invalid } = await qa.variants(address);
 
+// Awkward names and passwords for the form's other fields, grouped by what
+// the app should do with each: accept, reject, store_as_text, decide.
+const names = await qa.nameVariants({ field: 'first_name', maxLength: 50 });
+const passwords = await qa.passwordVariants({ minLength: 8, maxLength: 64 });
+
 // After the app changes the test account's password, keep the saved one in step.
 await qa.setPassword(address, { password: 'the-new-test-password' });
 

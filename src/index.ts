@@ -508,6 +508,36 @@ export interface Offers {
   }>;
 }
 
+// Awkward values for a form's name or password field, the way variants()
+// gives unusual versions of an address. Each group says what to expect:
+// accept (a real name, or a password within the rules), reject (breaks the
+// field's own limits), store_as_text (HTML or SQL the app must store as
+// text, never run) and decide (apps differ: note what the app did).
+export interface FieldVariant {
+  tests: string;
+  value: string;
+}
+
+export type NameField = 'first_name' | 'last_name' | 'full_name' | 'display_name';
+
+export interface NameVariants {
+  field: NameField;
+  max_length: number | null;
+  accept: FieldVariant[];
+  reject: FieldVariant[];
+  store_as_text: FieldVariant[];
+  decide: FieldVariant[];
+}
+
+export interface PasswordVariants {
+  min_length: number;
+  max_length: number;
+  symbols: boolean;
+  accept: FieldVariant[];
+  reject: FieldVariant[];
+  decide: FieldVariant[];
+}
+
 export interface AddressAllowance {
   // True on Free.
   limited: boolean;
@@ -1141,6 +1171,27 @@ export class ProxyMailQA {
 
   variants(address: string) {
     return this.request<Variants>('GET', `/addresses/${encodeURIComponent(address)}/variants`);
+  }
+
+  // Awkward names for a name field: apostrophes, accents, other scripts,
+  // very long ones, and HTML or SQL the app must store as text.
+  nameVariants(options: { field?: NameField; maxLength?: number } = {}) {
+    const query = new URLSearchParams();
+    if (options.field) query.set('field', options.field);
+    if (options.maxLength !== undefined) query.set('max_length', String(options.maxLength));
+    const suffix = query.size ? `?${query}` : '';
+    return this.request<NameVariants>('GET', `/variants/names${suffix}`);
+  }
+
+  // Awkward passwords within a field's rules: the minimum and maximum, each
+  // symbol class, spaces and non-ASCII. Fresh each call.
+  passwordVariants(options: { minLength?: number; maxLength?: number; symbols?: boolean } = {}) {
+    const query = new URLSearchParams();
+    if (options.minLength !== undefined) query.set('min_length', String(options.minLength));
+    if (options.maxLength !== undefined) query.set('max_length', String(options.maxLength));
+    if (options.symbols !== undefined) query.set('symbols', String(options.symbols));
+    const suffix = query.size ? `?${query}` : '';
+    return this.request<PasswordVariants>('GET', `/variants/passwords${suffix}`);
   }
 
   // Saves the password the test account uses now, after the app under test
