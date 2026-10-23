@@ -559,7 +559,16 @@ export interface UnsubscribeStatus {
 
 export interface EmailChecks {
   address: string;
-  email: { id: string; received_at: string; service: string | null; service_domain: string | null; type: 'code' | 'link' | null; subtype: string | null };
+  email: {
+    id: string;
+    received_at: string;
+    service: string | null;
+    service_domain: string | null;
+    type: 'code' | 'link' | null;
+    subtype: string | null;
+    // Sign-in, transactional or marketing; null for an email from before types.
+    category?: 'auth' | 'transactional' | 'marketing' | null;
+  };
   // No check failed (warnings don't count).
   passed: boolean;
   failed: CheckId[];
@@ -611,11 +620,14 @@ export interface RunInput {
 
 export interface RunEvent {
   at: string;
-  kind: 'address' | 'email' | 'missing' | 'none' | 'count' | 'checks' | 'note';
+  kind: 'address' | 'checkout' | 'email' | 'missing' | 'none' | 'count' | 'checks' | 'note' | 'test' | 'unsubscribe' | 'offers' | 'coupon';
   address: string | null;
   failed: boolean;
   detail: Record<string, unknown>;
 }
+
+// Words, a value shown as code, or text from an email or client shown as is.
+export type RunTextPart = string | { code: string } | { quote: string };
 
 export interface Run {
   id: string;
@@ -627,8 +639,15 @@ export interface Run {
   finished_at: string | null;
   // The run in the app.
   url: string;
+  project?: { id: string; name: string };
   // Not in listRuns.
   events?: RunEvent[];
+  // getRun: where the emails it checked would land (with spam checks on in
+  // Labs), when any was checked.
+  deliverability?: { checked: number; likely_spam: number; may_spam: number; harmful_attachments: number; highest_spam_score: number | null };
+  // getRun: how it differs from the finished runs before it with the same
+  // name; null without any.
+  comparison?: { runs: number; changes: Array<{ kind: string; text: RunTextPart[] }> } | null;
 }
 
 // An API error. When a wait finds nothing, hint says why as far as Proxy Mail
