@@ -71,7 +71,8 @@ export interface SignInAccount extends Address {
 }
 
 export interface SignInOptions {
-  // The host or page URL of the sign-in form, such as staging.example.com.
+  // The host or page URL of the sign-in form, such as staging.example.com. A
+  // site Proxy Mail QA doesn't work with is refused, as for createAddress.
   site?: string;
   // Only accounts for this environment (or for none), such as staging.
   environment?: string;
@@ -218,7 +219,9 @@ export interface Match {
 
 export interface CreateAddressInput {
   label?: string;
-  // A custom name before the @; random when left out.
+  // A custom name before the @; random when left out. Generic names on their
+  // own (test, demo, info…) and words for running a mail domain (admin,
+  // postmaster…) are refused.
   name?: string;
   // Also generate a fictional first name, last name and username.
   persona?: boolean;
@@ -234,7 +237,9 @@ export interface CreateAddressInput {
   // Where the persona lives, as an ISO 3166-1 alpha-2 code such as GB.
   country?: string;
   // Where the account is used: the host or a page URL of the app under test
-  // (kept as the host), and the environment, such as staging or local.
+  // (kept as the host), and the environment, such as staging or local. A
+  // site Proxy Mail QA doesn't work with (Instagram, TikTok, Google…) is
+  // refused with a 403 unless the project has an exception.
   site?: string;
   environment?: string;
 }
@@ -275,11 +280,13 @@ export interface AddressPatch {
 }
 
 export interface Refusal {
-  reason: 'too_large' | 'address_limit' | 'daily_limit';
+  reason: 'too_large' | 'address_limit' | 'daily_limit' | 'blocked_site';
   first_at: string;
   last_at: string;
   count: number;
   size_bytes: number | null;
+  // For blocked_site: the site the mail came from, such as Instagram.
+  site?: string | null;
 }
 
 // What reached an address, what was refused and why, without waiting.
@@ -320,7 +327,7 @@ export interface WaitOptions {
   // Default: the last 15 minutes.
   since?: Date | string;
   // Only a code or link nobody has used yet: not returned by an earlier
-  // wait, nor opened or copied in the app.
+  // wait, nor opened, copied or filled in the app or Proxy Mail QA for Chrome.
   unused?: boolean;
 }
 
@@ -745,7 +752,8 @@ export class ProxyMailQA {
   // environments, email prefix or default mail domain (one of project()'s
   // mail_domains). Only the fields given change; null clears website or
   // emailPrefix. Needs the project's lead (or an organisation owner or
-  // admin), and is in the project's activity log.
+  // admin), and is in the project's activity log. A website on a site Proxy
+  // Mail QA doesn't work with is refused, as for createAddress's site.
   updateProject(patch: { name?: string; website?: string | null; environments?: string[]; emailPrefix?: string | null; mailDomain?: string }) {
     const { emailPrefix, mailDomain, ...rest } = patch;
     return this.request<Record<string, unknown> & { addresses?: AddressAllowance }>('PATCH', '/project', {
