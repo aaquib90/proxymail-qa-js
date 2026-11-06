@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { ProxyMailQA, ProxyMailQAError } from '../src/index.ts';
 
@@ -16,6 +17,21 @@ describe('ProxyMailQA', () => {
     expect(url).toBe('https://api.test/v1/addresses');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer qa_test');
     expect(JSON.parse(String(init.body))).toEqual({ persona: true, lifetime_days: 3 });
+  });
+
+  it("never shows its key when logged, a test's copy included", async () => {
+    const key = 'qa_FAKE_key_never_real_42';
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json([]));
+    const qa = new ProxyMailQA({ apiKey: key, baseUrl: 'https://api.test', fetch: fetch as unknown as typeof globalThis.fetch, run: 'run-1' });
+    for (const shown of [qa, qa.forTest('signs up')]) {
+      expect(inspect(shown, { showHidden: true, depth: 5 })).not.toContain(key);
+      expect(JSON.stringify(shown)).not.toContain(key);
+      expect(String(Object.values(shown))).not.toContain(key);
+      expect(Object.keys(shown)).not.toContain('apiKey');
+      await shown.listAddresses();
+    }
+    // It still sends it.
+    expect(fetch.mock.calls.map(([, init]) => (init!.headers as Record<string, string>).Authorization)).toEqual([`Bearer ${key}`, `Bearer ${key}`]);
   });
 
   it('waits for a code, passing since, service and link types along', async () => {
@@ -313,6 +329,132 @@ describe('ProxyMailQA', () => {
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://api.test/v1/form-values');
     expect(JSON.parse(String(init.body))).toEqual({ fields: [{ id: 'e', type: 'email' }, { id: 'p', type: 'password', max_length: 12 }], age: 'under18', country: 'GB' });
+  });
+
+  it("sends a screen's own fields with the page and guess, and reads custom and guessed values", async () => {
+    const answer = {
+      address: 'a@mailclub.dev',
+      created: false,
+      persona: null,
+      values: [
+        { id: 'size', kind: 'custom', value: '11-50', rule: { id: 'f1', name: 'Company size' } },
+        { id: 'terms', kind: 'custom', value: null, checked: true, rule: { id: 'f2', name: 'Terms' } },
+        { id: 'seats', kind: 'guess', value: '5', from: 'type', note: 'Guessed from its type: check it suits your test.' },
+      ],
+    };
+    const { fetch, qa } = client([Response.json(answer)]);
+    const fields = [
+      { id: 'size', type: 'select', testId: 'company-size', required: true, options: [{ value: '', label: 'Choose', disabled: true }, { value: '11-50' }] },
+      { id: 'terms', type: 'checkbox', htmlId: 'terms' },
+      { id: 'seats', type: 'number', min: 5, max: 9, step: 1 },
+      { id: 'start', type: 'date', min: '2026-11-01' },
+    ];
+    const result = await qa.formValues({ fields, address: 'a@mailclub.dev', site: 'staging.example.com', page: '/signup/team', guess: 'required' });
+    expect(result.values.map((v) => v.kind)).toEqual(['custom', 'custom', 'guess']);
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({
+      fields: [
+        { id: 'size', type: 'select', test_id: 'company-size', required: true, options: [{ value: '', label: 'Choose', disabled: true }, { value: '11-50' }] },
+        { id: 'terms', type: 'checkbox', html_id: 'terms' },
+        { id: 'seats', type: 'number', min: 5, max: 9, step: 1 },
+        { id: 'start', type: 'date', min: '2026-11-01' },
+      ],
+      address: 'a@mailclub.dev',
+      page: '/signup/team',
+      guess: 'required',
+      site: 'staging.example.com',
+    });
+  });
+
+  it("lists, saves and removes the project's custom fields, and says when the leads were asked instead", async () => {
+    const field = { id: 'f1', name: 'Company size', match: { on: 'test_id', text: 'company-size' }, value: { kind: 'option', option: '11-50' } };
+    const request = { id: 'r1', kind: 'delete_custom_field', status: 'requested', summary: 'Company size' };
+    const { fetch, qa } = client([
+      Response.json({ guesses: 'all', locked: false, fields: [field], waiting: [] }),
+      Response.json({ status: 'saved', field }, { status: 201 }),
+      Response.json({ status: 'requested', request }, { status: 202 }),
+      Response.json({ status: 'removed', id: 'f1' }),
+    ]);
+    expect((await qa.customFields()).fields).toEqual([field]);
+    const saved = await qa.saveCustomField({
+      name: 'Company size',
+      match: { on: 'test_id', text: 'company-size' },
+      site: 'staging.example.com',
+      fieldType: 'select',
+      value: { kind: 'option', option: '11-50' },
+      tagAnswer: true,
+    });
+    expect(saved).toEqual({ status: 'saved', field });
+    const asked = await qa.deleteCustomField('f1');
+    expect(asked.status).toBe('requested');
+    if (asked.status === 'requested') expectTypeOf(asked.request.summary).toEqualTypeOf<string>();
+    expect(await qa.deleteCustomField('f1')).toEqual({ status: 'removed', id: 'f1' });
+    const calls = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
+      'GET https://api.test/v1/project/custom-fields',
+      'POST https://api.test/v1/project/custom-fields',
+      'DELETE https://api.test/v1/project/custom-fields/f1',
+      'DELETE https://api.test/v1/project/custom-fields/f1',
+    ]);
+    expect(JSON.parse(String(calls[1]![1].body))).toEqual({
+      name: 'Company size',
+      match: { on: 'test_id', text: 'company-size' },
+      site: 'staging.example.com',
+      field_type: 'select',
+      value: { kind: 'option', option: '11-50' },
+      tag_answer: true,
+    });
+  });
+
+  it("lists the project's sites, changes their sign-up screens and setting, and sends a native screen and a match's other phrases", async () => {
+    const screen = { id: 's1', site_id: 'e1', kind: 'path', value: '/signup/team', label: 'Team details', status: 'kept' };
+    const site = { id: 'e1', pattern: 'https://staging.example.com/*', environment: 'staging', multi_step: true, screens: [screen] };
+    const request = { id: 'r1', kind: 'remove_signup_screen', status: 'requested', summary: '/signup/team' };
+    const { fetch, qa } = client([
+      Response.json({ locked: false, you_lead: true, sites: [site], app_screens: [], waiting: [] }),
+      Response.json({ status: 'saved', site }),
+      Response.json({ status: 'kept', screen }, { status: 201 }),
+      Response.json({ status: 'kept', screen: { ...screen, site_id: null, kind: 'native', value: 'Team details', label: null } }),
+      Response.json({ status: 'requested', request }, { status: 202 }),
+      Response.json({ address: 'a@mailclub.dev', created: false, persona: null, values: [], screen: null }),
+      Response.json({ status: 'saved', field: {} }, { status: 201 }),
+    ]);
+    expect((await qa.sites()).sites).toEqual([site]);
+    expect(await qa.setMultiStep('staging.example.com', true)).toEqual({ status: 'saved', site });
+    expect((await qa.saveSignupScreen({ site: 'staging.example.com', page: '/signup/team', label: 'Team details' })).status).toBe('kept');
+    await qa.saveSignupScreen({ screen: 'Team details', label: null });
+    const asked = await qa.removeSignupScreen('a/b');
+    expect(asked.status).toBe('requested');
+    if (asked.status === 'requested') expectTypeOf(asked.request.summary).toEqualTypeOf<string>();
+    expect((await qa.formValues({ fields: [{ id: 'team', label: 'Team name' }], screen: 'Team details' })).screen).toBeNull();
+    await qa.saveCustomField({
+      name: 'Referral',
+      match: { on: 'words', text: 'referral code', also: ['Empfehlungscode'] },
+      value: { kind: 'text', text: 'QA' },
+    });
+    const calls = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
+      'GET https://api.test/v1/project/sites',
+      'PATCH https://api.test/v1/project/sites',
+      'POST https://api.test/v1/project/sites/screens',
+      'POST https://api.test/v1/project/sites/screens',
+      'DELETE https://api.test/v1/project/sites/screens/a%2Fb',
+      'POST https://api.test/v1/form-values',
+      'POST https://api.test/v1/project/custom-fields',
+    ]);
+    const body = (i: number) => JSON.parse(String(calls[i]![1].body)) as Record<string, unknown>;
+    expect(body(1)).toEqual({ site: 'staging.example.com', multi_step: true });
+    expect(body(2)).toEqual({ site: 'staging.example.com', page: '/signup/team', label: 'Team details' });
+    expect(body(3)).toEqual({ screen: 'Team details', label: null });
+    expect(body(5)).toEqual({ fields: [{ id: 'team', label: 'Team name' }], screen: 'Team details' });
+    expect(body(6).match).toEqual({ on: 'words', text: 'referral code', also: ['Empfehlungscode'] });
+  });
+
+  it('changes the guesses setting with updateProject, and reads it from project()', async () => {
+    const project = { id: 'p1', fill_unknown_fields: 'off', locked: false, custom_fields: 2, multi_step_sites: ['https://staging.example.com/*'] };
+    const { fetch, qa } = client([Response.json(project), Response.json(project)]);
+    expect((await qa.updateProject({ fillUnknownFields: 'off' })).fill_unknown_fields).toBe('off');
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ fill_unknown_fields: 'off' });
+    expect((await qa.project()).multi_step_sites).toEqual(['https://staging.example.com/*']);
   });
 
   describe('prepared accounts (create, check and reset)', () => {

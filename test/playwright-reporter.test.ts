@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ProxyMailQAReporter from '../src/playwright-reporter.ts';
 import { ProxyMailQA } from '../src/index.ts';
@@ -67,6 +68,18 @@ describe('the Playwright reporter', () => {
     vi.stubEnv('PROXYMAIL_QA_API_KEY', '');
     await new ProxyMailQAReporter().onEnd({ status: 'failed' } as never);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('never shows a key it was given when logged, and still sends it', async () => {
+    vi.stubEnv('PROXYMAIL_QA_RUN', RUN);
+    const fetch = stubFetch();
+    const key = 'qa_FAKE_key_never_real_42';
+    const reporter = new ProxyMailQAReporter({ apiKey: key, baseUrl: 'https://api.test' });
+    expect(inspect(reporter, { showHidden: true, depth: 5 })).not.toContain(key);
+    expect(JSON.stringify(reporter)).not.toContain(key);
+    reporter.onBegin({}, suite(testCase('gets a code', 'expected')) as never);
+    await reporter.onEnd({ status: 'passed' } as never);
+    expect((fetch.mock.calls[0]![1]!.headers as Record<string, string>).Authorization).toBe(`Bearer ${key}`);
   });
 });
 

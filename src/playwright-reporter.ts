@@ -14,8 +14,12 @@ const MAX_RESULTS = 200;
 
 export default class ProxyMailQAReporter implements Reporter {
   private suite: Suite | null = null;
+  // Private at run time, as the client's key is, so logging the reporter never shows an apiKey given here.
+  readonly #options: Pick<ClientOptions, 'apiKey' | 'baseUrl'>;
 
-  constructor(private readonly options: Pick<ClientOptions, 'apiKey' | 'baseUrl'> = {}) {}
+  constructor(options: Pick<ClientOptions, 'apiKey' | 'baseUrl'> = {}) {
+    this.#options = options;
+  }
 
   onBegin(_config: unknown, suite: Suite) {
     this.suite = suite;
@@ -54,7 +58,7 @@ export default class ProxyMailQAReporter implements Reporter {
 
   private client(): ProxyMailQA | null {
     try {
-      const qa = new ProxyMailQA(this.options);
+      const qa = new ProxyMailQA(this.#options);
       return qa.run ? qa : null;
     } catch {
       // No API key: nothing to report to.

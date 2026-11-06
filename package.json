@@ -1,6 +1,6 @@
 {
   "name": "proxymail-qa",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "Test every email your app sends from Playwright, Cypress, Jest, Vitest or any Node script: disposable inboxes, sign-up codes, links and coupons, email checks, unsubscribe tests and run reports.",
   "license": "MIT",
   "author": "Proxy Mail QA <hello@proxymail.qa> (https://proxymail.qa)",

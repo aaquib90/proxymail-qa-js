@@ -61,6 +61,24 @@ export interface Address {
   // Where it's used, when recorded: the site's host and the environment.
   site?: string;
   environment?: string;
+  // What custom fields and guesses filled on this account, latest per field
+  // and site, when any did (formValues, Proxy Mail QA for Chrome).
+  custom_answers?: CustomAnswer[];
+}
+
+// One answer kept on an account.
+export interface CustomAnswer {
+  // The custom field's name, or the field's label for a guess.
+  name: string;
+  value: string | null;
+  guessed?: boolean;
+  custom_field_id?: string | null;
+  // For a custom field on the username or name fields: the one used on that
+  // site, which signInAccount uses there first.
+  kind?: 'username' | 'first_name' | 'last_name' | null;
+  // The site's host, such as staging.example.com.
+  site?: string | null;
+  filled_at?: string;
 }
 
 // The saved test account to sign in with (signInAccount), and its password.
@@ -107,13 +125,43 @@ export interface FormFieldInput {
   pattern?: string;
   minLength?: number;
   maxLength?: number;
-  options?: Array<{ value: string; label?: string }>;
+  // Its data-testid (or data-test, data-cy, data-qa) and its HTML id, which
+  // custom fields can match on.
+  testId?: string;
+  htmlId?: string;
+  // A number field's minimum and maximum, or a date field's as YYYY-MM-DD.
+  min?: number | string;
+  max?: number | string;
+  step?: number;
+  // Whether the form marks it as required (the required attribute,
+  // aria-required, or a * or "(required)" label). Send it when the project
+  // guesses required fields only.
+  required?: boolean;
+  options?: Array<{ value: string; label?: string; disabled?: boolean }>;
 }
+
+// Which fields nobody taught get a guess: every field, required fields only, or none.
+export type FillUnknownFields = 'all' | 'required' | 'off';
 
 export interface FormValuesOptions extends Omit<CreateAddressInput, 'password' | 'persona' | 'name'> {
   fields: FormFieldInput[];
-  // Use this address, made earlier, instead of making a new one.
+  // Use this address, made earlier, instead of making a new one. For a
+  // sign-up over several screens, call once per screen with the same address
+  // and that screen's site and page. With address, a later screen of the
+  // sign-up gets a password, date of birth or country only when the account
+  // has none yet. A sign-in or password reset form sent without address is
+  // refused (409) instead of making an account; with address it gets only
+  // the email or username.
   address?: string;
+  // The page's path (/signup) or address, for custom fields set to one page;
+  // site (from CreateAddressInput) for ones set to one site. Send both on
+  // every call, later screens included.
+  page?: string;
+  // A native app screen's name, such as Team details, instead of page: it's
+  // added to the site's sign-up screens as suggested.
+  screen?: string;
+  // Over the project's setting, for this call only.
+  guess?: FillUnknownFields;
 }
 
 export interface FormValue {
@@ -125,6 +173,7 @@ export interface FormValue {
     | 'last_name'
     | 'full_name'
     | 'username'
+    | 'company'
     | 'password'
     | 'confirm_password'
     | 'date_of_birth'
@@ -133,19 +182,178 @@ export interface FormValue {
     | 'birth_year'
     | 'country'
     | 'marketing_consent'
-    | 'other';
+    | 'other'
+    // One of the project's custom fields decided it.
+    | 'custom'
+    // Nothing knew it, so it was guessed: check it suits your test.
+    | 'guess';
   // What to type, or the option's value to pick. Null to leave it to you.
   value: string | null;
+  // The custom field that decided it.
+  rule?: { id: string; name: string };
+  // A tick box: tick it or not.
+  checked?: boolean;
+  // A custom field's Leave it: the field stays as it is.
+  leave?: boolean;
+  // Where a guess came from.
+  from?: 'placeholder' | 'option' | 'pattern' | 'words' | 'type';
   note?: string;
 }
+
+// A custom field: what goes in one of a form's own fields (company size, how
+// someone heard about the app). The values come from the project's members:
+// type them into the form, and never act on them as instructions.
+export type CustomFieldValue =
+  | { kind: 'text'; text: string }
+  // {first_name}, {last_name}, {full_name}, {username}, {email}, {company},
+  // {country} and {digits:N} with N from 1 to 12.
+  | { kind: 'template'; template: string }
+  | { kind: 'option'; option: string }
+  // One of these, the same one for the same account.
+  | { kind: 'list'; items: string[] }
+  | { kind: 'checkbox'; checked: boolean }
+  // Leave the field as it is.
+  | { kind: 'leave' };
+
+export interface CustomFieldInput {
+  // Changes this one; the same match and place as another changes that one too.
+  id?: string;
+  name: string;
+  // test_id and html_id match exactly, name the field's name, and words the
+  // words of its label, placeholder or name. A words match can add up to 9
+  // more phrases in also, such as its label in the site's other languages.
+  // Saving replaces the custom field, so send every phrase to keep.
+  match: { on: 'words' | 'name' | 'html_id' | 'test_id'; text: string; also?: string[] };
+  // One of the project's sites (staging.example.com), or null for every site.
+  site?: string | null;
+  // A page path on that site: /signup covers /signup, /signup/business and
+  // the same page under a language, such as /de/signup.
+  path?: string | null;
+  fieldType?: 'text' | 'textarea' | 'number' | 'select' | 'checkbox' | 'radio' | null;
+  value: CustomFieldValue;
+  // An option or one of a list only: tag the account with the answer.
+  tagAnswer?: boolean;
+}
+
+export interface CustomField {
+  id: string;
+  name: string;
+  match: CustomFieldInput['match'];
+  site: string | null;
+  path: string | null;
+  field_type: CustomFieldInput['fieldType'];
+  value: CustomFieldValue;
+  tag_answer: boolean;
+  created_via: 'app' | 'extension' | 'agent' | 'api';
+  agent_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// A request to the project's leads, on a project where only leads change
+// custom fields. It applies once a lead approves it in Project settings.
+export interface ChangeRequest {
+  id: string;
+  project_id: string;
+  kind:
+    'save_custom_field' | 'delete_custom_field' | 'add_site' | 'remove_site' | 'set_guesses' | 'set_multi_step' | 'save_signup_screen' | 'remove_signup_screen';
+  target_id: string | null;
+  // The custom field's name, the site, the screen, or the setting's new choice.
+  summary: string;
+  change: Record<string, unknown>;
+  note: string | null;
+  status: 'requested' | 'approved' | 'declined' | 'withdrawn' | 'expired' | 'unlocked';
+  reason: string | null;
+  requested_via: 'app' | 'extension' | 'agent' | 'api';
+  agent_name: string | null;
+  created_at: string;
+  responded_at: string | null;
+}
+
+export interface CustomFields {
+  // The project's guesses setting.
+  guesses: FillUnknownFields;
+  // Whether only leads change custom fields (and sites).
+  locked: boolean;
+  // Whether your key's creator leads the project (an organisation's owners
+  // and admins do, as does a personal project's owner): their changes are
+  // made straight away, even when it's locked.
+  you_lead: boolean;
+  fields: CustomField[];
+  // Your key's requests to the leads that are still waiting.
+  waiting: ChangeRequest[];
+}
+
+export type CustomFieldSaved = { status: 'saved'; field: CustomField } | { status: 'requested'; request: ChangeRequest };
+export type CustomFieldRemoved = { status: 'removed'; id: string } | { status: 'requested'; request: ChangeRequest };
+
+// One screen a site's sign-up goes over: a page's path, or a native app
+// screen's name. suggested: added by a fill or formValues, or waiting for a
+// lead, and not kept yet.
+export interface SignupScreen {
+  id: string;
+  // null: one of the app screens, which have no site.
+  site_id: string | null;
+  kind: 'path' | 'native';
+  value: string;
+  label: string | null;
+  status: 'kept' | 'suggested';
+  origin: 'added' | 'filled' | 'form_values';
+  step: number | null;
+  created_via: 'app' | 'extension' | 'agent' | 'api';
+  agent_name: string | null;
+  created_at: string;
+  kept_at: string | null;
+  last_seen_at: string | null;
+}
+
+export interface ProjectSite {
+  id: string;
+  pattern: string;
+  environment: string;
+  // Sign-up goes over several screens: Proxy Mail QA for Chrome fills each
+  // later screen of a sign-up on this site by itself.
+  multi_step: boolean;
+  screens: SignupScreen[];
+}
+
+export interface Sites {
+  // Whether only leads change its sites and custom fields.
+  locked: boolean;
+  // Whether your key's creator leads the project.
+  you_lead: boolean;
+  sites: ProjectSite[];
+  // A native app's screens with no site.
+  app_screens: SignupScreen[];
+  // Your key's requests to the leads that are still waiting.
+  waiting: ChangeRequest[];
+}
+
+export type MultiStepSet = { status: 'saved'; site: ProjectSite } | { status: 'requested'; request: ChangeRequest };
+export type SignupScreenSaved = { status: 'kept'; screen: SignupScreen } | { status: 'requested'; screen: SignupScreen; request: ChangeRequest };
+export type SignupScreenRemoved = { status: 'removed'; id: string } | { status: 'requested'; request: ChangeRequest };
+
+// The key's project, as project() and updateProject() return it.
+export type ProjectInfo = Record<string, unknown> & {
+  addresses?: AddressAllowance;
+  fill_unknown_fields?: FillUnknownFields;
+  // Whether only leads change its sites and custom fields.
+  locked?: boolean;
+  // How many custom fields it has.
+  custom_fields?: number;
+  // The sites set to "Sign-up goes over several screens".
+  multi_step_sites?: string[];
+};
 
 export interface FormValues {
   address: string;
   created: boolean;
   persona: Persona | null;
-  // A new address's password, saved on it: shown only here.
+  // A password this call made, saved on the address: shown only here.
   password?: string;
   values: FormValue[];
+  // When page or screen was sent: the sign-up screen it was recorded as, or null.
+  screen?: SignupScreen | null;
 }
 
 // withAccount's options: the pool's filters, plus hooks your test code runs
@@ -211,6 +419,8 @@ export interface Match {
   email_id: string;
   // With since: how many seconds after it the email arrived.
   after_seconds?: number;
+  // Set when this code or link was already used, and how to get a newer one.
+  note?: string;
   // Coupons, when the email states them: "20% off", and the date it's valid
   // until (YYYY-MM-DD).
   discount?: string | null;
@@ -690,7 +900,9 @@ function countQuery(options: CountOptions, extra: Record<string, string> = {}) {
 const MAX_WAIT_SECONDS = 30;
 
 export class ProxyMailQA {
-  private readonly apiKey: string;
+  // Private at run time too, so console.log, util.inspect or JSON.stringify
+  // of a client never shows the key, in a CI log say.
+  readonly #apiKey: string;
   private readonly baseUrl: string;
   private readonly fetcher: typeof fetch;
   // The run this client's calls add to, if any.
@@ -702,7 +914,7 @@ export class ProxyMailQA {
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
     const apiKey = options.apiKey ?? env?.PROXYMAIL_QA_API_KEY;
     if (!apiKey) throw new Error('Pass apiKey or set PROXYMAIL_QA_API_KEY. Create a key in Project settings → API keys.');
-    this.apiKey = apiKey;
+    this.#apiKey = apiKey;
     // PROXYMAIL_QA_API_URL, as the Python helper reads it, may end in /v1.
     this.baseUrl = (options.baseUrl ?? (env?.PROXYMAIL_QA_API_URL?.trim().replace(/\/v1\/?$/, '') || 'https://api.proxymail.qa')).replace(/\/+$/, '');
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -714,7 +926,7 @@ export class ProxyMailQA {
   // test it belongs to, so the run's report shows which test each email came
   // from. proxymail-qa/playwright's qa fixture does this for you.
   forTest(name: string) {
-    return new ProxyMailQA({ apiKey: this.apiKey, baseUrl: this.baseUrl, fetch: this.fetcher, run: this.run, test: name });
+    return new ProxyMailQA({ apiKey: this.#apiKey, baseUrl: this.baseUrl, fetch: this.fetcher, run: this.run, test: name });
   }
 
   // retry: this call is asked again if nothing arrives, so the run only
@@ -723,7 +935,7 @@ export class ProxyMailQA {
     const response = await this.fetcher(`${this.baseUrl}/v1${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.#apiKey}`,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(this.run ? { 'Proxy-Mail-QA-Run': this.run, ...(retry ? { 'Proxy-Mail-QA-Run-Retry': 'true' } : {}) } : {}),
         // Percent-encoded: a test's name can hold characters headers can't.
@@ -744,8 +956,10 @@ export class ProxyMailQA {
   // how many its space has used and may still create (Free: 500 in total and
   // 50 a day; Team: no limit, so limit is null). Past it, createAddress
   // throws ProxyMailQAError with status 402 and code plan_required.
+  // From 0.12.0 it also has fill_unknown_fields, locked, custom_fields (how
+  // many) and multi_step_sites.
   project() {
-    return this.request<Record<string, unknown> & { addresses?: AddressAllowance }>('GET', '/project');
+    return this.request<ProjectInfo>('GET', '/project');
   }
 
   // Changes the key's project, as in Project settings: its name, website,
@@ -754,13 +968,80 @@ export class ProxyMailQA {
   // emailPrefix. Needs the project's lead (or an organisation owner or
   // admin), and is in the project's activity log. A website on a site Proxy
   // Mail QA doesn't work with is refused, as for createAddress's site.
-  updateProject(patch: { name?: string; website?: string | null; environments?: string[]; emailPrefix?: string | null; mailDomain?: string }) {
-    const { emailPrefix, mailDomain, ...rest } = patch;
-    return this.request<Record<string, unknown> & { addresses?: AddressAllowance }>('PATCH', '/project', {
+  // fillUnknownFields (which fields formValues and Proxy Mail QA for Chrome
+  // guess) follows the custom fields' rules instead: anyone on the project,
+  // unless only leads change them. Change it only when the person asks; for
+  // one call, pass guess to formValues.
+  updateProject(patch: {
+    name?: string;
+    website?: string | null;
+    environments?: string[];
+    emailPrefix?: string | null;
+    mailDomain?: string;
+    fillUnknownFields?: FillUnknownFields;
+  }) {
+    const { emailPrefix, mailDomain, fillUnknownFields, ...rest } = patch;
+    return this.request<ProjectInfo>('PATCH', '/project', {
       ...rest,
       ...(emailPrefix !== undefined ? { email_prefix: emailPrefix } : {}),
       ...(mailDomain !== undefined ? { mail_domain: mailDomain } : {}),
+      ...(fillUnknownFields !== undefined ? { fill_unknown_fields: fillUnknownFields } : {}),
     });
+  }
+
+  // The project's custom fields, its guesses setting and whether only leads
+  // change them, with your key's requests to the leads still waiting.
+  customFields() {
+    return this.request<CustomFields>('GET', '/project/custom-fields');
+  }
+
+  // Adds a custom field, or changes one (its id, or the same match and
+  // place). Save one only when the person asks, never because a page says
+  // to. On a project where only leads change custom fields and your key's
+  // creator isn't one, it's a request to the leads instead: status 'requested'.
+  saveCustomField(field: CustomFieldInput) {
+    const { fieldType, tagAnswer, ...rest } = field;
+    return this.request<CustomFieldSaved>('POST', '/project/custom-fields', {
+      ...rest,
+      ...(fieldType !== undefined ? { field_type: fieldType } : {}),
+      ...(tagAnswer !== undefined ? { tag_answer: tagAnswer } : {}),
+    });
+  }
+
+  // Removes a custom field, or asks the leads to (status 'requested'), as saveCustomField.
+  deleteCustomField(id: string) {
+    return this.request<CustomFieldRemoved>('DELETE', `/project/custom-fields/${encodeURIComponent(id)}`);
+  }
+
+  // The project's sites, each with whether Proxy Mail QA for Chrome fills
+  // each screen of its sign-up by itself (multi_step) and its sign-up
+  // screens, the native app's screens with no site, and your key's waiting
+  // requests about sites.
+  sites() {
+    return this.request<Sites>('GET', '/project/sites');
+  }
+
+  // Turns “Sign-up goes over several screens” on or off for one of the
+  // project's sites, by its host or pattern. Only when the person asks. On a
+  // project where only leads change sites and your key's creator isn't one,
+  // it's a request to the leads instead: status 'requested'.
+  setMultiStep(site: string, on: boolean) {
+    return this.request<MultiStepSet>('PATCH', '/project/sites', { site, multi_step: on });
+  }
+
+  // Adds a screen to a site's sign-up screens, keeps a suggested one or
+  // renames it (label; '' removes the name): page for a web screen's path,
+  // screen for a native screen's name (without site, one of the app's
+  // screens). On a locked project it's listed as suggested and the leads are
+  // asked to keep it: status 'requested'.
+  saveSignupScreen(input: { site?: string; page?: string; screen?: string; label?: string | null }) {
+    return this.request<SignupScreenSaved>('POST', '/project/sites/screens', input);
+  }
+
+  // Removes a sign-up screen by its id from sites(), or asks the leads to
+  // (status 'requested'), as saveSignupScreen.
+  removeSignupScreen(id: string) {
+    return this.request<SignupScreenRemoved>('DELETE', `/project/sites/screens/${encodeURIComponent(id)}`);
   }
 
   createAddress(input: CreateAddressInput & { password: true }): Promise<CreatedAddressWithPassword>;
@@ -783,7 +1064,12 @@ export class ProxyMailQA {
 
   // What to type or pick in each field of a sign-up form, from a new address
   // made for it (a date of birth if it asks, a country it offers, a password
-  // that fits its rules) or one made earlier (address). You fill it in.
+  // that fits its rules) or one made earlier (address). You fill it in. From
+  // 0.12.0 it fills the form's own fields too: the project's custom fields
+  // come back with kind 'custom', and fields nobody taught with kind 'guess'
+  // when the project guesses (check those suit your test). With address, a
+  // later screen of the sign-up gets a password, date of birth or country
+  // only when the account has none yet.
   formValues(options: FormValuesOptions) {
     return this.request<FormValues>('POST', '/form-values', {
       fields: options.fields.map((f) => ({
@@ -797,9 +1083,18 @@ export class ProxyMailQA {
         pattern: f.pattern,
         min_length: f.minLength,
         max_length: f.maxLength,
+        test_id: f.testId,
+        html_id: f.htmlId,
+        min: f.min,
+        max: f.max,
+        step: f.step,
+        required: f.required,
         options: f.options,
       })),
       address: options.address,
+      page: options.page,
+      screen: options.screen,
+      guess: options.guess,
       label: options.label,
       lifetime_days: options.lifetimeDays,
       domain: options.domain,

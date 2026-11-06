@@ -175,6 +175,46 @@ const { values } = await qa.formValues({
   ],
 });
 
+// The form's own questions too: the project's custom fields come back with
+// kind 'custom', and fields nobody taught with kind 'guess' (check those suit
+// your test). On a sign-up over several screens, send each screen's fields
+// with the same address, and its site and page, so custom fields kept to them
+// apply.
+const { values: teamStep } = await qa.formValues({
+  address,
+  site: 'staging.example.com',
+  page: '/signup/team',
+  fields: [{ id: 'size', type: 'select', label: 'Company size', required: true, options: [{ value: '1-10' }, { value: '11-50' }] }],
+});
+
+// In a native app, send the screen's name instead of its page (not both).
+await qa.formValues({ address, screen: 'Team details', fields: [{ id: 'role', type: 'text', label: 'Your role' }] });
+
+// formValues is for sign-up forms. A sign-in or password reset form sent with
+// the address you signed up with gets only the email or username; without an
+// address, the API refuses it (409) and makes no account.
+
+// Teach a field once for the project: everyone's tests and Proxy Mail QA for
+// Chrome fill it the same way. Where only leads change custom fields, this
+// asks them instead (status 'requested').
+await qa.saveCustomField({ name: 'Company size', match: { on: 'words', text: 'company size' }, value: { kind: 'option', option: '11-50' } });
+
+// On a site in several languages, one custom field can hold the label in each.
+// Saving replaces the custom field, so send every phrase to keep.
+await qa.saveCustomField({
+  name: 'Referral code',
+  match: { on: 'words', text: 'referral code', also: ['empfehlungscode', 'code de parrainage'] },
+  value: { kind: 'leave' },
+});
+
+// A sign-up over several screens: each site's sign-up screens, and filling each
+// screen by itself in Proxy Mail QA for Chrome. Only when the person asks; on a
+// locked project these ask the leads instead (status 'requested').
+const { sites } = await qa.sites();
+await qa.setMultiStep('staging.example.com', true);
+const saved = await qa.saveSignupScreen({ site: 'staging.example.com', page: '/signup/team', label: 'Team details' });
+await qa.removeSignupScreen(saved.screen.id);
+
 // Borrow an account in the state the test needs. Your hooks make one when
 // none is free, confirm its state and put it back; they talk to your app,
 // Proxy Mail QA never does.
