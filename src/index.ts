@@ -62,7 +62,8 @@ export interface Address {
   site?: string;
   environment?: string;
   // What custom fields and guesses filled on this account, latest per field
-  // and site, when any did (formValues, Proxy Mail QA for Chrome).
+  // and site, when any did (formValues, or Proxy Mail QA for Chrome 0.9.0 and
+  // later).
   custom_answers?: CustomAnswer[];
 }
 
@@ -224,7 +225,9 @@ export interface CustomFieldInput {
   // more phrases in also, such as its label in the site's other languages.
   // Saving replaces the custom field, so send every phrase to keep.
   match: { on: 'words' | 'name' | 'html_id' | 'test_id'; text: string; also?: string[] };
-  // One of the project's sites (staging.example.com), or null for every site.
+  // Its host or a site pattern (staging.example.com, https://*.example.com/*),
+  // or null for every site. It needn't be one of the project's sites yet; a
+  // blocked site is refused.
   site?: string | null;
   // A page path on that site: /signup covers /signup, /signup/business and
   // the same page under a language, such as /de/signup.
@@ -235,26 +238,24 @@ export interface CustomFieldInput {
   tagAnswer?: boolean;
 }
 
+// A custom field as the API gives it. Who made it, and when, are in the app.
 export interface CustomField {
   id: string;
   name: string;
   match: CustomFieldInput['match'];
+  // The site pattern it applies on, or null for every site.
   site: string | null;
   path: string | null;
   field_type: CustomFieldInput['fieldType'];
   value: CustomFieldValue;
   tag_answer: boolean;
-  created_via: 'app' | 'extension' | 'agent' | 'api';
-  agent_name: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 // A request to the project's leads, on a project where only leads change
 // custom fields. It applies once a lead approves it in Project settings.
+// Who asked and answered, and when, are in the app.
 export interface ChangeRequest {
   id: string;
-  project_id: string;
   kind:
     'save_custom_field' | 'delete_custom_field' | 'add_site' | 'remove_site' | 'set_guesses' | 'set_multi_step' | 'save_signup_screen' | 'remove_signup_screen';
   target_id: string | null;
@@ -263,11 +264,8 @@ export interface ChangeRequest {
   change: Record<string, unknown>;
   note: string | null;
   status: 'requested' | 'approved' | 'declined' | 'withdrawn' | 'expired' | 'unlocked';
+  // A lead's reason for declining.
   reason: string | null;
-  requested_via: 'app' | 'extension' | 'agent' | 'api';
-  agent_name: string | null;
-  created_at: string;
-  responded_at: string | null;
 }
 
 export interface CustomFields {
@@ -311,8 +309,8 @@ export interface ProjectSite {
   id: string;
   pattern: string;
   environment: string;
-  // Sign-up goes over several screens: Proxy Mail QA for Chrome fills each
-  // later screen of a sign-up on this site by itself.
+  // Sign-up goes over several screens: Proxy Mail QA for Chrome 0.9.0 and
+  // later fills each later screen of a sign-up on this site by itself.
   multi_step: boolean;
   screens: SignupScreen[];
 }
@@ -954,8 +952,9 @@ export class ProxyMailQA {
 
   // The key's project: its mail domains, prefix and limits. addresses says
   // how many its space has used and may still create (Free: 500 in total and
-  // 50 a day; Team: no limit, so limit is null). Past it, createAddress
-  // throws ProxyMailQAError with status 402 and code plan_required.
+  // 50 a day; Team: no limit, so limit is null). Past the 500, createAddress
+  // throws ProxyMailQAError with status 402 and code plan_required; past the
+  // day's 50, status 429 and code daily_limit, until midnight UTC.
   // From 0.12.0 it also has fill_unknown_fields, locked, custom_fields (how
   // many) and multi_step_sites.
   project() {
@@ -969,9 +968,9 @@ export class ProxyMailQA {
   // admin), and is in the project's activity log. A website on a site Proxy
   // Mail QA doesn't work with is refused, as for createAddress's site.
   // fillUnknownFields (which fields formValues and Proxy Mail QA for Chrome
-  // guess) follows the custom fields' rules instead: anyone on the project,
-  // unless only leads change them. Change it only when the person asks; for
-  // one call, pass guess to formValues.
+  // 0.9.0 and later guess) follows the custom fields' rules instead: anyone
+  // on the project, unless only leads change them. Change it only when the
+  // person asks; for one call, pass guess to formValues.
   updateProject(patch: {
     name?: string;
     website?: string | null;
@@ -1013,10 +1012,10 @@ export class ProxyMailQA {
     return this.request<CustomFieldRemoved>('DELETE', `/project/custom-fields/${encodeURIComponent(id)}`);
   }
 
-  // The project's sites, each with whether Proxy Mail QA for Chrome fills
-  // each screen of its sign-up by itself (multi_step) and its sign-up
-  // screens, the native app's screens with no site, and your key's waiting
-  // requests about sites.
+  // The project's sites, each with whether Proxy Mail QA for Chrome 0.9.0 and
+  // later fills each screen of its sign-up by itself (multi_step) and its
+  // sign-up screens, the native app's screens with no site, and your key's
+  // waiting requests about sites.
   sites() {
     return this.request<Sites>('GET', '/project/sites');
   }
@@ -1032,8 +1031,8 @@ export class ProxyMailQA {
   // Adds a screen to a site's sign-up screens, keeps a suggested one or
   // renames it (label; '' removes the name): page for a web screen's path,
   // screen for a native screen's name (without site, one of the app's
-  // screens). On a locked project it's listed as suggested and the leads are
-  // asked to keep it: status 'requested'.
+  // screens). On a locked project, unless your key's creator leads it, it's
+  // listed as suggested and the leads are asked to keep it: status 'requested'.
   saveSignupScreen(input: { site?: string; page?: string; screen?: string; label?: string | null }) {
     return this.request<SignupScreenSaved>('POST', '/project/sites/screens', input);
   }

@@ -134,7 +134,8 @@ const [teen] = await qa.listAddresses({ tags: ['age-gate'], country: 'GB', maxAg
 const account = await qa.signInAccount({ site: 'staging.example.com', tags: ['verified'] });
 
 // How many addresses this project can still create: Free has 500 in total
-// and 50 a day (limit null on Team). Past it, createAddress throws a 402.
+// and 50 a day (limit null on Team). Past the 500, createAddress throws a 402
+// plan_required; past the day's 50, a 429 daily_limit until midnight UTC.
 const { addresses } = await qa.project();
 
 // Testing on localhost? Links to it then pass checkEmail's local-links check.
@@ -195,8 +196,9 @@ await qa.formValues({ address, screen: 'Team details', fields: [{ id: 'role', ty
 // address, the API refuses it (409) and makes no account.
 
 // Teach a field once for the project: everyone's tests and Proxy Mail QA for
-// Chrome fill it the same way. Where only leads change custom fields, this
-// asks them instead (status 'requested').
+// Chrome 0.9.0 and later fill it the same way. Where only leads change custom
+// fields, this asks them instead (status 'requested'), unless your key's
+// creator leads the project (you_lead): then it's saved straight away.
 await qa.saveCustomField({ name: 'Company size', match: { on: 'words', text: 'company size' }, value: { kind: 'option', option: '11-50' } });
 
 // On a site in several languages, one custom field can hold the label in each.
@@ -207,9 +209,11 @@ await qa.saveCustomField({
   value: { kind: 'leave' },
 });
 
-// A sign-up over several screens: each site's sign-up screens, and filling each
-// screen by itself in Proxy Mail QA for Chrome. Only when the person asks; on a
-// locked project these ask the leads instead (status 'requested').
+// A sign-up over several screens: each site's sign-up screens, and whether
+// Proxy Mail QA for Chrome 0.9.0 and later fills each screen by itself.
+// Change them only when the person asks. On a locked project these ask the
+// leads instead (status 'requested'), unless your key's creator leads it
+// (you_lead): then the change is made straight away.
 const { sites } = await qa.sites();
 await qa.setMultiStep('staging.example.com', true);
 const saved = await qa.saveSignupScreen({ site: 'staging.example.com', page: '/signup/team', label: 'Team details' });

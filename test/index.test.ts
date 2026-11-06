@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { inspect } from 'node:util';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { ProxyMailQA, ProxyMailQAError } from '../src/index.ts';
+import { ProxyMailQA, ProxyMailQAError, type ChangeRequest, type CustomField } from '../src/index.ts';
 
 const MATCH = { address: 'a@mailclub.dev', type: 'code', subtype: 'otp', value: '986512', service: 'Spotify' };
 
@@ -449,6 +450,14 @@ describe('ProxyMailQA', () => {
     expect(body(6).match).toEqual({ on: 'words', text: 'referral code', also: ['Empfehlungscode'] });
   });
 
+  // REST gives custom fields and requests without who made, asked for or
+  // answered them, nor how and when (workers/mail/src/operations.ts's
+  // shownField and shownRequest).
+  it('types custom fields and requests with only the keys the API returns', () => {
+    expectTypeOf<keyof CustomField>().toEqualTypeOf<'id' | 'name' | 'match' | 'site' | 'path' | 'field_type' | 'value' | 'tag_answer'>();
+    expectTypeOf<keyof ChangeRequest>().toEqualTypeOf<'id' | 'kind' | 'target_id' | 'summary' | 'change' | 'note' | 'status' | 'reason'>();
+  });
+
   it('changes the guesses setting with updateProject, and reads it from project()', async () => {
     const project = { id: 'p1', fill_unknown_fields: 'off', locked: false, custom_fields: 2, multi_step_sites: ['https://staging.example.com/*'] };
     const { fetch, qa } = client([Response.json(project), Response.json(project)]);
@@ -597,5 +606,65 @@ describe('ProxyMailQA', () => {
     const error = await qa.savedPassword('a@mailclub.dev').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ProxyMailQAError);
     expect(error).toMatchObject({ status: 403, code: 'forbidden' });
+  });
+});
+
+// The README and these comments go to npm, so they say what the API and
+// Proxy Mail QA for Chrome do now.
+describe('the README and the comments', () => {
+  const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+  // Each run of // comment lines, and each of the README's paragraphs outside
+  // its code, as one text with its lines joined.
+  const texts = (file: string, prose: boolean) => {
+    const found: string[] = [];
+    let lines: string[] = [];
+    let code = false;
+    const end = () => {
+      if (lines.length) found.push(lines.join(' '));
+      lines = [];
+    };
+    for (const line of file.split('\n')) {
+      const comment = /^\s*\/\/\s?(.*)$/.exec(line);
+      if (line.startsWith('```')) {
+        end();
+        code = !code;
+      } else if (comment) lines.push(comment[1]!.trim());
+      else if (prose && !code && line.trim()) lines.push(line.trim());
+      else end();
+    }
+    end();
+    return found;
+  };
+  const blocks = [...texts(read('../README.md'), true), ...texts(read('../src/index.ts'), false)];
+  const sentences = blocks.flatMap((text) => text.split(/(?<=[.!?])\s+/));
+
+  // Owner, 6 Nov 2026: custom fields, guesses and filling later screens by
+  // themselves came with Proxy Mail QA for Chrome 0.9.0. Codes and links it
+  // filled before.
+  it('name Chrome 0.9.0 and later wherever they say Chrome fills custom fields, guesses or screens', () => {
+    const claims = sentences.filter(
+      (s) => s.includes('Proxy Mail QA for Chrome') && /\b(?:fill\w*|guess\w*|screens?)\b/i.test(s) && !/\b(?:code|link)s?\b/.test(s),
+    );
+    expect(claims.length).toBeGreaterThanOrEqual(6);
+    for (const claim of claims) expect(claim).toContain('Proxy Mail QA for Chrome 0.9.0 and later');
+  });
+
+  // Free's 500 in total answer 402 plan_required, the day's 50 answer 429
+  // daily_limit (docs/limits.md).
+  it("give the day's limit as a 429 daily_limit, never a 402", () => {
+    const limits = blocks.filter((b) => /\b402\b/.test(b) && /\b50 a day\b|\bday's 50\b|\bdaily\b/.test(b));
+    expect(limits.length).toBeGreaterThanOrEqual(2);
+    for (const block of limits) {
+      expect(block).toMatch(/\b402\b[^.;]*\bplan_required\b/);
+      expect(block).toMatch(/\b429\b[^.;]*\bdaily_limit\b/);
+    }
+  });
+
+  // On a locked project a lead's change is made straight away; only a key
+  // whose creator isn't a lead asks the leads.
+  it('say a change asks the leads only when your key’s creator isn’t one', () => {
+    const asks = sentences.filter((s) => /\bask(?:s)? (?:the leads|them) instead\b|\bleads are asked\b|\brequest to the leads instead\b/.test(s));
+    expect(asks.length).toBeGreaterThanOrEqual(5);
+    for (const sentence of asks) expect(sentence).toMatch(/\byou_lead\b|\bleads it\b|\bisn't (?:one|a lead)\b/);
   });
 });
