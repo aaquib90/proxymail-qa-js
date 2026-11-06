@@ -1,0 +1,13 @@
+# Keeps the workflows' actions up to date. They're pinned to commits, and
+# Dependabot moves each pin and its version comment together. The package's
+# own dependencies come from its source in Proxy Mail QA's main repository
+# (RELEASING.md), so they're updated there, not here.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
