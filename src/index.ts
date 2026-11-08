@@ -158,9 +158,10 @@ export interface FormValuesOptions extends Omit<CreateAddressInput, 'password' |
   // site (from CreateAddressInput) for ones set to one site. Send both on
   // every call, later screens included.
   page?: string;
-  // A native app screen's name, such as Team details, instead of page: it's
-  // added to the site's sign-up screens as suggested, unless the list is full
-  // (20), when nothing is added.
+  // A native app screen's name, such as Team details, instead of page: on a
+  // sign-up it's added to the site's sign-up screens as suggested, or to the
+  // project's app screens when no site matches, unless the list is full (20),
+  // when nothing is added.
   screen?: string;
   // Over the project's setting, for this call only.
   guess?: FillUnknownFields;

@@ -668,12 +668,16 @@ describe('the README and the comments', () => {
     for (const sentence of asks) expect(sentence).toMatch(/\byou_lead\b|\bleads it\b|\bisn't (?:one|a lead)\b/);
   });
 
-  // formValues adds the page or screen it's sent as suggested only while the
-  // site's list has room: at 20 it adds nothing (owner, 6 Nov 2026), as the
-  // API's own text and docs/node.md say.
+  // formValues adds the page or screen a sign-up is on as suggested only while
+  // the list has room: at 20 it adds nothing (owner, 6 Nov 2026). A native
+  // screen with no site of the project goes to its app screens, which also
+  // hold 20, as the API's own form_values text says.
   it('say a screen formValues adds as suggested is added unless the list is full (20)', () => {
     const adds = sentences.filter((s) => /\badd(?:s|ed)\b[^.]*\bas suggested\b/.test(s));
     expect(adds.length).toBeGreaterThanOrEqual(1);
     for (const sentence of adds) expect(sentence).toContain('unless the list is full (20)');
+    const native = adds.filter((s) => s.includes('native app screen'));
+    expect(native.length).toBeGreaterThanOrEqual(1);
+    for (const sentence of native) expect(sentence).toMatch(/\bon a sign-up\b.*\bor to the project's app screens when no site matches\b/);
   });
 });
