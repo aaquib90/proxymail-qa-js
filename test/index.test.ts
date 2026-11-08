@@ -667,4 +667,13 @@ describe('the README and the comments', () => {
     expect(asks.length).toBeGreaterThanOrEqual(5);
     for (const sentence of asks) expect(sentence).toMatch(/\byou_lead\b|\bleads it\b|\bisn't (?:one|a lead)\b/);
   });
+
+  // formValues adds the page or screen it's sent as suggested only while the
+  // site's list has room: at 20 it adds nothing (owner, 6 Nov 2026), as the
+  // API's own text and docs/node.md say.
+  it('say a screen formValues adds as suggested is added unless the list is full (20)', () => {
+    const adds = sentences.filter((s) => /\badd(?:s|ed)\b[^.]*\bas suggested\b/.test(s));
+    expect(adds.length).toBeGreaterThanOrEqual(1);
+    for (const sentence of adds) expect(sentence).toContain('unless the list is full (20)');
+  });
 });
