@@ -201,6 +201,10 @@ await qa.formValues({ address, screen: 'Team details', fields: [{ id: 'role', ty
 // creator leads the project (you_lead): then it's saved straight away.
 await qa.saveCustomField({ name: 'Company size', match: { on: 'words', text: 'company size' }, value: { kind: 'option', option: '11-50' } });
 
+// No test value in mind? { kind: 'generate' } makes up one that suits the
+// field, the same one for the same account, on any field but a tick box.
+await qa.saveCustomField({ name: 'Job title', match: { on: 'words', text: 'job title' }, value: { kind: 'generate' } });
+
 // On a site in several languages, one custom field can hold the label in each.
 // Saving replaces the custom field, so send every phrase to keep.
 await qa.saveCustomField({
@@ -215,6 +219,9 @@ await qa.saveCustomField({
 // leads instead (status 'requested'), unless your key's creator leads it
 // (you_lead): then the change is made straight away.
 const { sites } = await qa.sites();
+await qa.addSite('staging.example.com', 'staging'); // only a site that doesn't look live
+await qa.setCustomFieldEnabled('a-custom-field-id', false);
+await qa.setStandardField('company', false); // that box is left empty
 await qa.setMultiStep('staging.example.com', true);
 const saved = await qa.saveSignupScreen({ site: 'staging.example.com', page: '/signup/team', label: 'Team details' });
 await qa.removeSignupScreen(saved.screen.id);

@@ -121,7 +121,8 @@ export interface FormFieldInput {
   label?: string;
   placeholder?: string;
   autocomplete?: string;
-  // What the group around it says, such as a fieldset's legend.
+  // What the group around it says, such as a fieldset's legend, or the
+  // question a group of tick boxes answers. Send each tick box as a field.
   group?: string;
   pattern?: string;
   minLength?: number;
@@ -139,6 +140,11 @@ export interface FormFieldInput {
   // guesses required fields only.
   required?: boolean;
   options?: Array<{ value: string; label?: string; disabled?: boolean }>;
+  // A drop-down that takes several answers: <select multiple>, or a list the
+  // page draws itself, such as a box of chips, sent as a combobox or text field
+  // (send multiple: true on those too). Its answer comes back in values, and
+  // only a custom field set to several options fills it.
+  multiple?: boolean;
 }
 
 // Which fields nobody taught get a guess: every field, required fields only, or none.
@@ -150,7 +156,8 @@ export interface FormValuesOptions extends Omit<CreateAddressInput, 'password' |
   // sign-up over several screens, call once per screen with the same address
   // and that screen's site and page. With address, a later screen of the
   // sign-up gets a password, date of birth or country only when the account
-  // has none yet. A sign-in or password reset form sent without address is
+  // has none yet, and the account records site and environment when it has
+  // none yet. A sign-in or password reset form sent without address is
   // refused (409) instead of making an account; with address it gets only
   // the email or username.
   address?: string;
@@ -196,6 +203,8 @@ export interface FormValue {
   rule?: { id: string; name: string };
   // A tick box: tick it or not.
   checked?: boolean;
+  // A field sent with multiple: the value of each option to select. value is null.
+  values?: string[];
   // A custom field's Leave it: the field stays as it is.
   leave?: boolean;
   // Where a guess came from.
@@ -214,7 +223,15 @@ export type CustomFieldValue =
   | { kind: 'option'; option: string }
   // One of these, the same one for the same account.
   | { kind: 'list'; items: string[] }
+  // Every one of these, for every account, 1 to 20: the tick boxes of a group
+  // (boxes not listed are unticked, though a consent box, a marketing box or a
+  // box with its own custom field is left as it is) or a drop-down that takes
+  // several answers. Never a radio group.
+  | { kind: 'options'; options: string[] }
   | { kind: 'checkbox'; checked: boolean }
+  // Proxy Mail QA makes up a value that suits the field, the same one for the
+  // same account. Any field but a checkbox, never a personal ID field.
+  | { kind: 'generate' }
   // Leave the field as it is.
   | { kind: 'leave' };
 
@@ -244,6 +261,8 @@ export interface CustomFieldInput {
 export interface CustomField {
   id: string;
   name: string;
+  // false when fills ignore it, as if it weren't there. It's still listed.
+  enabled: boolean;
   match: CustomFieldInput['match'];
   // The site pattern it applies on, or null for every site.
   site: string | null;
@@ -259,7 +278,16 @@ export interface CustomField {
 export interface ChangeRequest {
   id: string;
   kind:
-    'save_custom_field' | 'delete_custom_field' | 'add_site' | 'remove_site' | 'set_guesses' | 'set_multi_step' | 'save_signup_screen' | 'remove_signup_screen';
+    | 'save_custom_field'
+    | 'delete_custom_field'
+    | 'add_site'
+    | 'remove_site'
+    | 'set_guesses'
+    | 'set_multi_step'
+    | 'save_signup_screen'
+    | 'remove_signup_screen'
+    | 'set_custom_field_enabled'
+    | 'set_standard_field';
   target_id: string | null;
   // The custom field's name, the site, the screen, or the setting's new choice.
   summary: string;
@@ -270,9 +298,16 @@ export interface ChangeRequest {
   reason: string | null;
 }
 
+// The standard fields with a switch. When one's off, its box is left empty.
+export type StandardFieldName = 'company' | 'first_name' | 'last_name' | 'full_name';
+export type StandardFieldSet = { status: 'saved'; standard_fields_off: StandardFieldName[] } | { status: 'requested'; request: ChangeRequest };
+
 export interface CustomFields {
   // The project's guesses setting.
   guesses: FillUnknownFields;
+  // The standard fields turned off: each box is left empty, unless a custom
+  // field that's on fills it.
+  standard_fields_off?: StandardFieldName[];
   // Whether only leads change custom fields (and sites).
   locked: boolean;
   // Whether your key's creator leads the project (an organisation's owners
@@ -329,6 +364,8 @@ export interface Sites {
   waiting: ChangeRequest[];
 }
 
+// listed: the site was on the list already, and is left as it is.
+export type SiteAdded = { status: 'saved' | 'listed'; site: ProjectSite } | { status: 'requested'; request: ChangeRequest };
 export type MultiStepSet = { status: 'saved'; site: ProjectSite } | { status: 'requested'; request: ChangeRequest };
 export type SignupScreenSaved = { status: 'kept'; screen: SignupScreen } | { status: 'requested'; screen: SignupScreen; request: ChangeRequest };
 export type SignupScreenRemoved = { status: 'removed'; id: string } | { status: 'requested'; request: ChangeRequest };
@@ -337,6 +374,8 @@ export type SignupScreenRemoved = { status: 'removed'; id: string } | { status: 
 export type ProjectInfo = Record<string, unknown> & {
   addresses?: AddressAllowance;
   fill_unknown_fields?: FillUnknownFields;
+  // The standard fields turned off (setStandardField).
+  standard_fields_off?: StandardFieldName[];
   // Whether only leads change its sites and custom fields.
   locked?: boolean;
   // How many custom fields it has.
@@ -487,6 +526,10 @@ export interface AddressPatch {
   date_of_birth?: string | null;
   // ISO 3166-1 alpha-2; null clears it.
   country?: string | null;
+  // Where the account is used: a host or page URL, kept as its host, and the
+  // environment, such as staging. null clears either.
+  site?: string | null;
+  environment?: string | null;
 }
 
 export interface Refusal {
@@ -957,8 +1000,8 @@ export class ProxyMailQA {
   // 50 a day; Team: no limit, so limit is null). Past the 500, createAddress
   // throws ProxyMailQAError with status 402 and code plan_required; past the
   // day's 50, status 429 and code daily_limit, until midnight UTC.
-  // From 0.12.0 it also has fill_unknown_fields, locked, custom_fields (how
-  // many) and multi_step_sites.
+  // From 0.12.0 it also has fill_unknown_fields, standard_fields_off, locked,
+  // custom_fields (how many) and multi_step_sites.
   project() {
     return this.request<ProjectInfo>('GET', '/project');
   }
@@ -1014,12 +1057,39 @@ export class ProxyMailQA {
     return this.request<CustomFieldRemoved>('DELETE', `/project/custom-fields/${encodeURIComponent(id)}`);
   }
 
+  // Turns a custom field on or off, or asks the leads to (status 'requested'),
+  // as saveCustomField. When it's off, fills ignore it, as if it weren't there;
+  // to keep a field empty, give a custom field the value leave instead.
+  setCustomFieldEnabled(id: string, on: boolean) {
+    return this.request<CustomFieldSaved>('PATCH', '/project/custom-fields', { id, enabled: on });
+  }
+
+  // Turns Company, First name, Last name or Full name on or off, or asks the
+  // leads to (status 'requested'), as saveCustomField. When it's off, that box
+  // is left empty, with no guess; a custom field that's on still fills it.
+  setStandardField(field: StandardFieldName, on: boolean) {
+    return this.request<StandardFieldSet>('PATCH', '/project/standard-fields', { field, on });
+  }
+
   // The project's sites, each with whether Proxy Mail QA for Chrome 0.9.0 and
   // later fills each screen of its sign-up by itself (multi_step) and its
   // sign-up screens, the native app's screens with no site, and your key's
   // waiting requests about sites.
   sites() {
     return this.request<Sites>('GET', '/project/sites');
+  }
+
+  // Adds a site to the project's list: a host or a page's address on it, such
+  // as staging.example.com or localhost:3000, with its environment. Only a
+  // host that doesn't look live (a local server, or a host with a test word
+  // in it such as staging, dev or qa, never the environment production): a
+  // live-looking one is refused (403) with a link for a person to add it in
+  // the app, where they confirm it's a test site. No *. On a project where
+  // only leads change sites and your key's creator isn't one, it's a request
+  // to the leads instead: status 'requested'. Chrome's access to the site is
+  // still each person's to give, from the extension's popup.
+  addSite(site: string, environment: string) {
+    return this.request<SiteAdded>('POST', '/project/sites', { site, environment });
   }
 
   // Turns “Sign-up goes over several screens” on or off for one of the
@@ -1091,6 +1161,7 @@ export class ProxyMailQA {
         step: f.step,
         required: f.required,
         options: f.options,
+        multiple: f.multiple,
       })),
       address: options.address,
       page: options.page,

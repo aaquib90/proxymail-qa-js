@@ -241,6 +241,21 @@ describe('ProxyMailQA', () => {
     expect(String(fetch.mock.calls[4]![0])).toBe('https://api.test/v1/project/dev-hosts');
   });
 
+  it('records where an address made earlier is used with updateAddress, and clears it with null', async () => {
+    const { fetch, qa } = client([
+      Response.json({ address: 'a@mailclub.dev', site: 'staging.example.com', environment: 'staging' }),
+      Response.json({ address: 'a@mailclub.dev' }),
+    ]);
+    const updated = await qa.updateAddress('a@mailclub.dev', { site: 'https://staging.example.com/signup', environment: 'staging' });
+    expect(updated).toMatchObject({ site: 'staging.example.com', environment: 'staging' });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.test/v1/addresses/a%40mailclub.dev');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ site: 'https://staging.example.com/signup', environment: 'staging' });
+    await qa.updateAddress('a@mailclub.dev', { site: null, environment: null });
+    expect(JSON.parse(String((fetch.mock.calls[1] as unknown as [string, RequestInit])[1].body))).toEqual({ site: null, environment: null });
+  });
+
   it('adds its calls to a run once one is started, and reports it', async () => {
     const run = { id: 'run-1', name: 'Sign-up tests', status: 'running', url: 'https://app.proxymail.qa/runs/run-1' };
     const { fetch, qa } = client([
@@ -406,6 +421,58 @@ describe('ProxyMailQA', () => {
     });
   });
 
+  it('turns a custom field on or off with PATCH, and says when the leads were asked instead', async () => {
+    const field = { id: 'f1', name: 'Company size', enabled: false, match: { on: 'test_id', text: 'company-size' }, value: { kind: 'option', option: '11-50' } };
+    const request = { id: 'r1', kind: 'set_custom_field_enabled', status: 'requested', summary: 'Company size', change: { id: 'f1', on: true } };
+    const { fetch, qa } = client([Response.json({ status: 'saved', field }), Response.json({ status: 'requested', request }, { status: 202 })]);
+    expect(await qa.setCustomFieldEnabled('f1', false)).toEqual({ status: 'saved', field });
+    const asked = await qa.setCustomFieldEnabled('f1', true);
+    expect(asked.status).toBe('requested');
+    if (asked.status === 'requested') expectTypeOf(asked.request.summary).toEqualTypeOf<string>();
+    const calls = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
+      'PATCH https://api.test/v1/project/custom-fields',
+      'PATCH https://api.test/v1/project/custom-fields',
+    ]);
+    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ id: 'f1', enabled: false });
+    expect(JSON.parse(String(calls[1]![1].body))).toEqual({ id: 'f1', enabled: true });
+  });
+
+  it('turns a standard field on or off, or asks the leads to', async () => {
+    const request = { id: 'r1', kind: 'set_standard_field', status: 'requested', summary: 'Company', change: { field: 'company', on: true } };
+    const { fetch, qa } = client([Response.json({ status: 'saved', standard_fields_off: ['company'] }), Response.json({ status: 'requested', request }, { status: 202 })]);
+    expect(await qa.setStandardField('company', false)).toEqual({ status: 'saved', standard_fields_off: ['company'] });
+    const asked = await qa.setStandardField('company', true);
+    expect(asked.status).toBe('requested');
+    if (asked.status === 'requested') expectTypeOf(asked.request.kind).toEqualTypeOf<ChangeRequest['kind']>();
+    const calls = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual([
+      'PATCH https://api.test/v1/project/standard-fields',
+      'PATCH https://api.test/v1/project/standard-fields',
+    ]);
+    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ field: 'company', on: false });
+    expect(JSON.parse(String(calls[1]![1].body))).toEqual({ field: 'company', on: true });
+  });
+
+  it('adds a site, and gives the refusal of one that looks live with its link', async () => {
+    const site = { id: 'e1', pattern: 'https://staging.example.dev/*', environment: 'staging', multi_step: false, screens: [] };
+    const live =
+      'www.example.com looks like a live site, where real people may sign up, so it isn’t added from here. Give them this link, which opens it there: https://app.test/p/p1/settings?section=sites&add=site&address=www.example.com';
+    const { fetch, qa } = client([
+      Response.json({ status: 'saved', site }, { status: 201 }),
+      Response.json({ status: 'requested', request: { id: 'r1', kind: 'add_site', status: 'requested', summary: 'http://localhost/*' } }, { status: 202 }),
+      Response.json({ error: 'forbidden', message: live }, { status: 403 }),
+    ]);
+    expect(await qa.addSite('staging.example.dev', 'staging')).toEqual({ status: 'saved', site });
+    const asked = await qa.addSite('localhost:3000', 'local');
+    expect(asked.status).toBe('requested');
+    if (asked.status === 'requested') expect(asked.request.kind).toBe('add_site');
+    await expect(qa.addSite('www.example.com', 'staging')).rejects.toMatchObject({ status: 403, message: live });
+    const calls = fetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => `${init.method} ${url}`)).toEqual(Array(3).fill('POST https://api.test/v1/project/sites'));
+    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ site: 'staging.example.dev', environment: 'staging' });
+  });
+
   it("lists the project's sites, changes their sign-up screens and setting, and sends a native screen and a match's other phrases", async () => {
     const screen = { id: 's1', site_id: 'e1', kind: 'path', value: '/signup/team', label: 'Team details', status: 'kept' };
     const site = { id: 'e1', pattern: 'https://staging.example.com/*', environment: 'staging', multi_step: true, screens: [screen] };
@@ -450,11 +517,33 @@ describe('ProxyMailQA', () => {
     expect(body(6).match).toEqual({ on: 'words', text: 'referral code', also: ['Empfehlungscode'] });
   });
 
+  it('sends a drop-down that takes several answers and types what comes back', async () => {
+    const answer = { address: 'a@mailclub.dev', password: 'x', values: [{ id: 't', kind: 'custom', value: null, values: ['s', 'n'] }] };
+    const { fetch, qa } = client([Response.json(answer)]);
+    const result = await qa.formValues({ fields: [{ id: 't', type: 'select', name: 'tools', multiple: true, options: [{ value: 's' }, { value: 'n' }] }] });
+    expect(result.values[0]!.values).toEqual(['s', 'n']);
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body)).fields[0].multiple).toBe(true);
+  });
+
+  it('saves a custom field that ticks or selects several options', async () => {
+    const { fetch, qa } = client([Response.json({ status: 'saved', created: true, field: { id: 'f1' } }, { status: 201 })]);
+    await qa.saveCustomField({ name: 'Tools', match: { on: 'name', text: 'tools' }, value: { kind: 'options', options: ['Slack', 'Figma'] } });
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body)).value).toEqual({ kind: 'options', options: ['Slack', 'Figma'] });
+  });
+
+  it('saves a custom field that makes up its own value', async () => {
+    const { fetch, qa } = client([Response.json({ status: 'saved', created: true, field: { id: 'f1' } }, { status: 201 })]);
+    await qa.saveCustomField({ name: 'Job title', match: { on: 'words', text: 'job title' }, value: { kind: 'generate' } });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.test/v1/project/custom-fields');
+    expect(JSON.parse(String(init.body)).value).toEqual({ kind: 'generate' });
+  });
+
   // REST gives custom fields and requests without who made, asked for or
   // answered them, nor how and when (workers/mail/src/operations.ts's
   // shownField and shownRequest).
   it('types custom fields and requests with only the keys the API returns', () => {
-    expectTypeOf<keyof CustomField>().toEqualTypeOf<'id' | 'name' | 'match' | 'site' | 'path' | 'field_type' | 'value' | 'tag_answer'>();
+    expectTypeOf<keyof CustomField>().toEqualTypeOf<'id' | 'name' | 'enabled' | 'match' | 'site' | 'path' | 'field_type' | 'value' | 'tag_answer'>();
     expectTypeOf<keyof ChangeRequest>().toEqualTypeOf<'id' | 'kind' | 'target_id' | 'summary' | 'change' | 'note' | 'status' | 'reason'>();
   });
 
