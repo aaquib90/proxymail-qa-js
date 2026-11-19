@@ -1,7 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { inspect } from 'node:util';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
-import { ProxyMailQA, ProxyMailQAError, type ChangeRequest, type CustomField } from '../src/index.ts';
+import {
+  ProxyMailQA,
+  ProxyMailQAError,
+  type ChangeRequest,
+  type CustomField,
+  type CustomFieldValue,
+  type ReadyMadeIdsFrom,
+  type ReadyMadeSection,
+  type ReadyMadeValue,
+  followsFormat,
+} from '../src/index.ts';
 
 const MATCH = { address: 'a@mailclub.dev', type: 'code', subtype: 'otp', value: '986512', service: 'Spotify' };
 
@@ -239,6 +249,41 @@ describe('ProxyMailQA', () => {
 
     expect(await qa.markDevHost('localhost:3000')).toEqual({ dev_hosts: ['localhost:3000'] });
     expect(String(fetch.mock.calls[4]![0])).toBe('https://api.test/v1/project/dev-hosts');
+  });
+
+  it('reads the clean-up list for a range and site (FM-39)', async () => {
+    const list = { from: '2026-11-01T00:00:00.000Z', to: '2026-11-13T00:00:00Z', kept_from: '', count: 0, truncated: false, mail_domains: ['mailclub.dev'], addresses: [] };
+    const { fetch, qa } = client([Response.json(list), Response.json(list)]);
+    expect(await qa.cleanupList({ from: new Date('2026-11-01T00:00:00Z'), site: 'staging.example.com' })).toEqual(list);
+    expect(String(fetch.mock.calls[0]![0])).toBe('https://api.test/v1/cleanup-list?from=2026-11-01T00%3A00%3A00.000Z&site=staging.example.com');
+    await qa.cleanupList();
+    expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/cleanup-list');
+  });
+
+  it('lists form sections and gets one, and checks a value here', async () => {
+    const section = { id: 'id.national', country: 'BR', format: { pattern: '^[0-9]{11}$', check: 'cpf' } };
+    const { fetch, qa } = client([Response.json({ country: 'IN', group: 'documents', sections: [] }), Response.json(section), Response.json(section), Response.json({ values: [] })]);
+    await qa.listFormSections({ country: 'IN', group: 'documents' });
+    expect(String(fetch.mock.calls[0]![0])).toBe('https://api.test/v1/form-sections?country=IN&group=documents');
+    const starters = client([Response.json({ starters: [] })]);
+    await starters.qa.signupStarters({ id: 'travel', language: 'fr' });
+    expect(String(starters.fetch.mock.calls[0]![0])).toBe('https://api.test/v1/signup-starters?id=travel&language=fr');
+    await qa.getFormSection('id.national', { country: 'BR', address: 'a@mailclub.dev' });
+    expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/form-sections/id.national?country=BR&address=a%40mailclub.dev');
+    // KYC sandbox mode (FM-10): a vendor and the outcome the test wants.
+    await qa.getFormSection('id.passport', { kycSandbox: 'didit' });
+    expect(String(fetch.mock.calls[2]![0])).toBe('https://api.test/v1/form-sections/id.passport?kyc_sandbox=didit');
+    await qa.formValues({ fields: [{ id: 'ssn', label: 'SSN' }], kycSandbox: 'stripe', kycOutcome: 'fail' });
+    expect(JSON.parse(String((fetch.mock.calls[3]![1] as RequestInit).body))).toMatchObject({ kyc_sandbox: 'stripe', kyc_outcome: 'fail' });
+    const cpf = { pattern: '^[0-9]{11}$', check: 'cpf' as const };
+    expect(followsFormat(cpf, '123.456.789-09')).toEqual({ follows: true });
+    expect(followsFormat(cpf, '123.456.789-08').follows).toBe(false);
+    expect(followsFormat({ pattern: '^[0-9]{12}$', check: 'verhoeff' }, '9999 4105 7058').follows).toBe(true);
+    expect(followsFormat({ pattern: '^[0-9]{17}[0-9X]$', check: 'gb11643' }, '11010519491231002x').follows).toBe(true);
+    expect(followsFormat({ pattern: '^[0-9A-Z]{12}[0-9]{2}$', check: 'cnpj' }, '12.ABC.345/01DE-35').follows).toBe(true);
+    expect(followsFormat({ pattern: '^(GB)?[0-9]{9}$', check: 'gb_vat' }, 'GB 980 7806 84').follows).toBe(true);
+    expect(followsFormat({ pattern: '^[0-9]{11}$', check: 'abn' }, '51 824 753 556').follows).toBe(true);
+    expect(followsFormat({ pattern: '^[0-9]{12}$', check: 'my_number' }, '123456789010').follows).toBe(false);
   });
 
   it('records where an address made earlier is used with updateAddress, and clears it with null', async () => {
@@ -539,6 +584,23 @@ describe('ProxyMailQA', () => {
     expect(JSON.parse(String(init.body)).value).toEqual({ kind: 'generate' });
   });
 
+  it('saves a ready-made custom field, matched by kind, with its options as they are', async () => {
+    const value = { kind: 'ready_made', section: 'phone', phones: [{ country: 'IN', number: '+91 00000 00001' }] } as const;
+    const field = { id: 'f1', name: 'Phone number', enabled: true, match: { on: 'kind', text: 'phone' }, site: null, path: null, field_type: null, value, tag_answer: false };
+    const { fetch, qa } = client([Response.json({ status: 'saved', field }), Response.json({ guesses: 'all', locked: false, you_lead: true, fill_id_fields: false, fields: [field], waiting: [] })]);
+    const saved = await qa.saveCustomField({ id: 'f1', name: 'Phone number', match: { on: 'kind', text: 'phone' }, value: { ...value, phones: [...value.phones] } });
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({
+      id: 'f1',
+      name: 'Phone number',
+      match: { on: 'kind', text: 'phone' },
+      value: { kind: 'ready_made', section: 'phone', phones: [{ country: 'IN', number: '+91 00000 00001' }] },
+    });
+    expect(saved).toMatchObject({ status: 'saved', field: { value: { kind: 'ready_made', section: 'phone' } } });
+    expect((await qa.customFields()).fields[0]!.match.on).toBe('kind');
+    expectTypeOf<Extract<CustomFieldValue, { kind: 'ready_made' }>['section']>().toEqualTypeOf<ReadyMadeSection>();
+    expectTypeOf<ReadyMadeValue['ids_from']>().toEqualTypeOf<ReadyMadeIdsFrom | undefined>();
+  });
+
   // REST gives custom fields and requests without who made, asked for or
   // answered them, nor how and when (workers/mail/src/operations.ts's
   // shownField and shownRequest).
@@ -768,5 +830,139 @@ describe('the README and the comments', () => {
     const native = adds.filter((s) => s.includes('native app screen'));
     expect(native.length).toBeGreaterThanOrEqual(1);
     for (const sentence of native) expect(sentence).toMatch(/\bon a sign-up\b.*\bor to the project's app screens when no site matches\b/);
+  });
+});
+
+// New in 0.13.0: sign-up forms, flow checks and submits, as requests to the API.
+describe('sign-up forms, flow checks and submits', () => {
+  const sent = (fetch: ReturnType<typeof client>['fetch'], n: number) => {
+    const [url, init] = fetch.mock.calls[n] as unknown as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    return { url, method: init.method, body: init.body === undefined ? undefined : JSON.parse(String(init.body)), headers };
+  };
+  const SPEC = {
+    name: 'Hollowmere Pay sign-up',
+    site: 'staging.example.com',
+    country: 'GB',
+    screens: [{ title: 'Your account', fields: [{ section: 'email' }, { section: 'business.team_size', required: false }] }],
+  };
+  const FORM = { id: 'form-1', name: 'Hollowmere Pay sign-up', status: 'saved', spec: SPEC, custom_fields: [], fills: [] };
+
+  it('lists the sign-up forms and gets one by its id', async () => {
+    const list = { locked: false, you_lead: true, forms: [{ id: 'form-1', name: 'Hollowmere Pay sign-up', status: 'saved' }] };
+    const { fetch, qa } = client([Response.json(list), Response.json(FORM)]);
+    expect((await qa.signupForms()).forms[0]!.name).toBe('Hollowmere Pay sign-up');
+    expect(sent(fetch, 0)).toMatchObject({ url: 'https://api.test/v1/project/signup-forms', method: 'GET', body: undefined });
+    expect(sent(fetch, 0).headers['Content-Type']).toBeUndefined();
+    expect((await qa.signupForm('form/1 b')).spec.name).toBe('Hollowmere Pay sign-up');
+    expect(sent(fetch, 1)).toMatchObject({ url: 'https://api.test/v1/project/signup-forms/form%2F1%20b', method: 'GET' });
+  });
+
+  it('saves a new form with its spec alone, and a change with the form’s id', async () => {
+    const request = { id: 'req-1', status: 'waiting' };
+    const { fetch, qa } = client([
+      Response.json({ status: 'saved', form: FORM }, { status: 201 }),
+      Response.json({ status: 'requested', form: { ...FORM, status: 'requested' }, request }),
+    ]);
+    expect((await qa.saveSignupForm(SPEC)).status).toBe('saved');
+    expect(sent(fetch, 0)).toMatchObject({ url: 'https://api.test/v1/project/signup-forms', method: 'POST', body: { spec: SPEC } });
+    expect(sent(fetch, 0).headers['Content-Type']).toBe('application/json');
+    const asked = await qa.saveSignupForm(SPEC, 'form-1');
+    expect(asked).toMatchObject({ status: 'requested', request: { id: 'req-1' } });
+    expect(sent(fetch, 1).body).toEqual({ spec: SPEC, id: 'form-1' });
+  });
+
+  it('throws the API’s reason when a spec is refused', async () => {
+    const { qa } = client([
+      Response.json(
+        { error: 'invalid_spec', message: 'screens[0].fields[1]: no section business.size. Use listFormSections for the ids.', help: 'https://proxymail.qa/docs/signup-forms' },
+        { status: 400 },
+      ),
+    ]);
+    const error = await qa.saveSignupForm(SPEC).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProxyMailQAError);
+    expect(error).toMatchObject({
+      status: 400,
+      code: 'invalid_spec',
+      message: 'screens[0].fields[1]: no section business.size. Use listFormSections for the ids.',
+      help: 'https://proxymail.qa/docs/signup-forms',
+    });
+  });
+
+  it('removes a form, and its custom fields only when asked', async () => {
+    const removed = { status: 'removed', id: 'form-1', custom_fields_removed: ['Team size'], custom_fields_asked: [], custom_fields_kept: ['Country'] };
+    const { fetch, qa } = client([Response.json({ ...removed, custom_fields_removed: [], custom_fields_kept: [] }), Response.json(removed)]);
+    await qa.deleteSignupForm('form-1');
+    expect(sent(fetch, 0)).toMatchObject({ url: 'https://api.test/v1/project/signup-forms/form-1', method: 'DELETE', body: undefined });
+    await qa.deleteSignupForm('form-1', { removeCustomFields: false });
+    expect(sent(fetch, 1).url).toBe('https://api.test/v1/project/signup-forms/form-1');
+    const both = client([Response.json(removed)]);
+    expect(await both.qa.deleteSignupForm('form-1', { removeCustomFields: true })).toEqual(removed);
+    expect(sent(both.fetch, 0).url).toBe('https://api.test/v1/project/signup-forms/form-1?remove_custom_fields=true');
+  });
+
+  it('asks for a form’s code in a format, or the change waiting for a lead', async () => {
+    const code = { form: { id: 'form-1', name: 'Hollowmere Pay sign-up', status: 'saved' }, format: 'html', files: [{ path: 'signup.html', contents: '<form></form>' }], dependencies: [], notes: [] };
+    const { fetch, qa } = client([Response.json(code), Response.json(code), Response.json(code)]);
+    expect((await qa.signupFormCode('form-1')).files[0]!.path).toBe('signup.html');
+    expect(sent(fetch, 0)).toMatchObject({ url: 'https://api.test/v1/project/signup-forms/form-1/code', method: 'GET' });
+    await qa.signupFormCode('form-1', { format: 'html' });
+    expect(sent(fetch, 1).url).toBe('https://api.test/v1/project/signup-forms/form-1/code?format=html');
+    await qa.signupFormCode('form 1', { format: 'react-hook-form', requested: true });
+    expect(sent(fetch, 2).url).toBe('https://api.test/v1/project/signup-forms/form%201/code?format=react-hook-form&requested=true');
+  });
+
+  it('asks for a form’s tests for a framework, or the change waiting for a lead', async () => {
+    const tests = { form: { id: 'form-1', name: 'Hollowmere Pay sign-up', status: 'requested' }, framework: 'cypress', files: [], dependencies: ['proxymail-qa'], counts: { refuse: 6, take: 4 }, notes: [] };
+    const { fetch, qa } = client([Response.json(tests), Response.json(tests), Response.json(tests)]);
+    expect((await qa.signupFormTest('form-1')).counts).toEqual({ refuse: 6, take: 4 });
+    expect(sent(fetch, 0)).toMatchObject({ url: 'https://api.test/v1/project/signup-forms/form-1/test', method: 'GET' });
+    await qa.signupFormTest('form-1', { requested: true });
+    expect(sent(fetch, 1).url).toBe('https://api.test/v1/project/signup-forms/form-1/test?requested=true');
+    await qa.signupFormTest('form-1', { framework: 'cypress', requested: true });
+    expect(sent(fetch, 2).url).toBe('https://api.test/v1/project/signup-forms/form-1/test?framework=cypress&requested=true');
+  });
+
+  it('records a submit with its flow and site, and never the form’s contents', async () => {
+    const submit = { id: 'sub-1', address: 'a@mailclub.dev', flow: 'reset', site: 'staging.example.com/reset', submitted_at: '2026-11-13T10:00:00.000Z' };
+    const { fetch, qa } = client([Response.json(submit, { status: 201 }), Response.json({ ...submit, flow: 'sign_up', site: null })]);
+    expect(await qa.markSubmitted('a@mailclub.dev', { flow: 'reset', site: 'https://staging.example.com/reset' })).toEqual(submit);
+    expect(sent(fetch, 0)).toMatchObject({
+      url: 'https://api.test/v1/addresses/a%40mailclub.dev/submits',
+      method: 'POST',
+      body: { flow: 'reset', site: 'https://staging.example.com/reset' },
+    });
+    expect((await qa.markSubmitted('a@mailclub.dev')).flow).toBe('sign_up');
+    // Left out, so the server picks a sign-up with no site.
+    expect(sent(fetch, 1).body).toEqual({});
+  });
+
+  it('gets the checks for a flow', async () => {
+    const checks = {
+      flow: 'password_reset',
+      checks: [{ id: 'newest_link_only', checks: 'Only the newest reset link works', steps: ['Ask for two links'], expect: 'The first link is refused', why: 'An old link in a leaked inbox stays a way in.' }],
+    };
+    const { fetch, qa } = client([Response.json(checks)]);
+    expect((await qa.flowChecks('password_reset')).checks.map((c) => c.id)).toEqual(['newest_link_only']);
+    expect(sent(fetch, 0)).toMatchObject({ url: 'https://api.test/v1/flow-checks?flow=password_reset', method: 'GET', body: undefined });
+  });
+
+  it('checks a passport number’s ICAO check digit here, without a request', async () => {
+    const { fetch, qa } = client([]);
+    const passport = { pattern: '^[0-9A-Z<]{9}[0-9]$', check: 'icao' as const };
+    // ICAO 9303's specimen passport number L898902C3, whose check digit is 6.
+    expect(qa.followsFormat(passport, 'L898902C36')).toEqual({ follows: true });
+    expect(qa.followsFormat(passport, 'L898902C37')).toEqual({ follows: false, problem: 'Its check digit is wrong.' });
+    // A filler < counts as 0.
+    expect(followsFormat(passport, 'L898902C<3')).toEqual({ follows: true });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('says a value doesn’t have the shape, naming it when the format has one', () => {
+    const ssn = { pattern: '^[0-9]{9}$', check: null, shape: 'NNN-NN-NNNN' };
+    expect(followsFormat(ssn, '000-12-345')).toEqual({ follows: false, problem: 'It doesn’t have the shape (NNN-NN-NNNN).' });
+    expect(followsFormat({ pattern: '^[0-9]{9}$', check: null }, 'ABC')).toEqual({ follows: false, problem: 'It doesn’t have the shape.' });
+    // No check digit to check: the shape is enough.
+    expect(followsFormat(ssn, '000 12 3456')).toEqual({ follows: true });
   });
 });

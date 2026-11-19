@@ -1,7 +1,7 @@
 # proxymail-qa
 
 Test the emails your app sends, end to end, from Playwright, Cypress,
-Puppeteer, Jest, Vitest or any Node script. Create a disposable address, sign
+Puppeteer, Jest, Vitest, any Node script or the command line. Create a disposable address, sign
 up with it, and get the verification code or link in one call that waits for
 it. Then:
 
@@ -94,31 +94,55 @@ test('sign-up sends one code', async ({ page, qa }) => {
 
 ## Cypress
 
-Register tasks in `cypress.config.ts`, since Cypress runs them in Node:
+`cy.proxymail` has the client's methods. Each runs in Node through one task,
+so the API key never reaches the browser. Register the task in
+`cypress.config.ts`:
 
 ```ts
-import { ProxyMailQA } from 'proxymail-qa';
+import { setupProxyMailQA } from 'proxymail-qa/cypress/plugin';
 
 export default defineConfig({
   e2e: {
     setupNodeEvents(on) {
-      const qa = new ProxyMailQA();
-      on('task', {
-        createAddress: () => qa.createAddress({ persona: true }),
-        waitForLink: (address: string) => qa.waitForLink(address, { type: 'verify' }),
-      });
+      setupProxyMailQA(on); // reads PROXYMAIL_QA_API_KEY
     },
   },
 });
 ```
 
+Add the commands in the support file (`cypress/support/e2e.ts`) with
+`import 'proxymail-qa/cypress';`, then:
+
 ```js
-cy.task('createAddress').then(({ address }) => {
+cy.proxymail.createAddress({ persona: true }).then(({ address }) => {
   cy.get('[name=email]').type(address);
   cy.contains('Sign up').click();
-  cy.task('waitForLink', address, { timeout: 35000 }).then(({ value }) => cy.visit(value));
+  cy.proxymail.waitForLink(address, { type: 'verify' }).then(({ value }) => cy.visit(value));
 });
 ```
+
+Waits get their timeout and a margin, so Cypress's task timeout doesn't cut
+them short. In a run, each call says which test it came from.
+`cy.proxymail` has every method except `withAccount` and a run's start and
+finish.
+
+## Command line
+
+```sh
+npx proxymail-qa new --password --country JP   # an address, password and persona
+npx proxymail-qa wait-code <address>           # the code from its newest email
+npx proxymail-qa wait-link <address> --type reset
+npx proxymail-qa persona <address>
+npx proxymail-qa form-values form.json         # what to type in each field
+```
+
+It reads the key from `PROXYMAIL_QA_API_KEY` only. In a terminal it labels
+what it shows; piped, it prints just the value (the address, then the
+password on a second line when you ask for one), so scripts can read it.
+`--json` gives the whole answer. It exits 1 when the API refuses or nothing
+arrives, with the reason on standard error, and 2 for a wrong command.
+`npx proxymail-qa help <command>` lists the options. Guide:
+https://proxymail.qa/docs/cli
 
 ## More
 
@@ -140,6 +164,11 @@ const { addresses } = await qa.project();
 
 // Testing on localhost? Links to it then pass checkEmail's local-links check.
 await qa.markDevHost('localhost:3000');
+
+// A two-factor sign-in: the authenticator app's code, worked out on this
+// machine from the secret (or otpauth:// address) the app showed at set-up.
+// The secret never reaches Proxy Mail QA.
+const totp = await qa.totpCode(process.env.ACME_TOTP_SECRET!, { minSecondsLeft: 5 });
 
 // The link that opens a mobile app (myapp://…) when the email also has a web one.
 const { value: appLink } = await qa.waitForLink(address, { app: true });

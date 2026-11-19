@@ -172,6 +172,13 @@ export interface FormValuesOptions extends Omit<CreateAddressInput, 'password' |
   screen?: string;
   // Over the project's setting, for this call only.
   guess?: FillUnknownFields;
+  // A KYC vendor's sandbox values for this form (New in 0.13.0): a new
+  // address takes its names and date of birth, and ID and business number
+  // fields get its values (ID and tax number fields only where a ready-made
+  // custom field fills them).
+  kycSandbox?: KycVendor;
+  // The result the test wants from the vendor's sandbox. Default: pass.
+  kycOutcome?: KycOutcome;
 }
 
 export interface FormValue {
@@ -182,6 +189,10 @@ export interface FormValue {
     | 'first_name'
     | 'last_name'
     | 'full_name'
+    // A name's reading (furigana) in a Japanese form: フリガナ, セイ, メイ.
+    | 'last_name_reading'
+    | 'first_name_reading'
+    | 'full_name_reading'
     | 'username'
     | 'company'
     | 'password'
@@ -196,7 +207,10 @@ export interface FormValue {
     // One of the project's custom fields decided it.
     | 'custom'
     // Nothing knew it, so it was guessed: check it suits your test.
-    | 'guess';
+    | 'guess'
+    // A KYC vendor's sandbox value, because the call asked for kycSandbox:
+    // only for that vendor's test mode.
+    | 'sandbox';
   // What to type, or the option's value to pick. Null to leave it to you.
   value: string | null;
   // The custom field that decided it.
@@ -209,6 +223,8 @@ export interface FormValue {
   leave?: boolean;
   // Where a guess came from.
   from?: 'placeholder' | 'option' | 'pattern' | 'words' | 'type';
+  // A KYC sandbox value's catalogue section (getFormSection).
+  section?: string;
   note?: string;
 }
 
@@ -233,7 +249,42 @@ export type CustomFieldValue =
   // same account. Any field but a checkbox, never a personal ID field.
   | { kind: 'generate' }
   // Leave the field as it is.
-  | { kind: 'leave' };
+  | { kind: 'leave' }
+  // New in 0.13.0: a ready-made custom field, Proxy Mail QA's own safe value
+  // for every field of one kind (match { on: 'kind', text: section }).
+  | ReadyMadeValue;
+
+// The sections a ready-made custom field fills, as listFormSections names them.
+export type ReadyMadeSection =
+  | 'phone'
+  | 'id.national'
+  | 'id.tax'
+  | 'id.passport'
+  | 'business.vat'
+  | 'business.tax'
+  | 'gender'
+  | 'referral_source'
+  | 'language'
+  | 'business.role'
+  | 'business.team_size'
+  | 'business.type'
+  | 'consent.terms';
+// A KYC vendor whose sandbox values a ready-made ID or tax number gives.
+export type ReadyMadeIdsFrom = 'safe' | 'stripe' | 'plaid' | 'onfido' | 'veriff' | 'didit' | 'cashfree' | 'setu';
+
+export interface ReadyMadeValue {
+  kind: 'ready_made';
+  section: ReadyMadeSection;
+  // ID and tax numbers only: safe (the default), a fake value that never
+  // matches a real person, or a KYC vendor's sandbox values for its test mode.
+  ids_from?: ReadyMadeIdsFrom;
+  // Phone number only: up to 20 test numbers your app accepts, one per
+  // country (two-letter code), for accounts in countries with no numbers set
+  // aside for fiction. Never a real person's number.
+  phones?: Array<{ country: string; number: string }>;
+  // The terms box only: ticked (the default) or not.
+  checked?: boolean;
+}
 
 export interface CustomFieldInput {
   // Changes this one; the same match and place as another changes that one too.
@@ -242,8 +293,11 @@ export interface CustomFieldInput {
   // test_id and html_id match exactly, name the field's name, and words the
   // words of its label, placeholder or name. A words match can add up to 9
   // more phrases in also, such as its label in the site's other languages.
-  // Saving replaces the custom field, so send every phrase to keep.
-  match: { on: 'words' | 'name' | 'html_id' | 'test_id'; text: string; also?: string[] };
+  // Saving replaces the custom field, so send every phrase to keep. kind (new
+  // in 0.13.0) is a ready-made custom field's, text its section: its match and
+  // section stay as saved. Only a lead's key adds or changes an ID or tax
+  // number one, or the phone number's test numbers.
+  match: { on: 'words' | 'name' | 'html_id' | 'test_id' | 'kind'; text: string; also?: string[] };
   // Its host or a site pattern (staging.example.com, https://*.example.com/*),
   // or null for every site. It needn't be one of the project's sites yet; a
   // blocked site is refused.
@@ -287,7 +341,8 @@ export interface ChangeRequest {
     | 'save_signup_screen'
     | 'remove_signup_screen'
     | 'set_custom_field_enabled'
-    | 'set_standard_field';
+    | 'set_standard_field'
+    | 'save_signup_form';
   target_id: string | null;
   // The custom field's name, the site, the screen, or the setting's new choice.
   summary: string;
@@ -308,6 +363,9 @@ export interface CustomFields {
   // The standard fields turned off: each box is left empty, unless a custom
   // field that's on fills it.
   standard_fields_off?: StandardFieldName[];
+  // True when the five ID and tax number ready-made custom fields are all
+  // there, for every site, and on.
+  fill_id_fields?: boolean;
   // Whether only leads change custom fields (and sites).
   locked: boolean;
   // Whether your key's creator leads the project (an organisation's owners
@@ -321,6 +379,181 @@ export interface CustomFields {
 
 export type CustomFieldSaved = { status: 'saved'; field: CustomField } | { status: 'requested'; request: ChangeRequest };
 export type CustomFieldRemoved = { status: 'removed'; id: string } | { status: 'requested'; request: ChangeRequest };
+
+// New in 0.13.0: sign-up forms (signupForms, signupForm, saveSignupForm,
+// deleteSignupForm, signupFormCode), a form as a spec: its screens, and on
+// each the fields from the field catalogue (listFormSections) in order. Saving makes the
+// custom fields the form needs, only for fields the built-in fill doesn't
+// cover, each matched by its test id.
+export interface SignupFormFieldInput {
+  // A section id from listFormSections, such as email or business.team_size;
+  // or custom, with customField, for a question the project's own custom field answers.
+  section: string;
+  // Section custom only: the custom field that fills it, by its id from
+  // listCustomFields. It keeps deciding the value; give the field the test id
+  // or label that custom field looks for.
+  custom_field?: string;
+  // Defaults to true.
+  required?: boolean;
+  // Defaults to the section's label in the form's language.
+  label?: string;
+  // Its data-testid; defaults to signup- and the section id with dashes.
+  testid?: string;
+  options?: {
+    country?: string;
+    min_length?: number;
+    max_length?: number;
+    classes?: Array<'lower' | 'upper' | 'digit' | 'symbol'>;
+    min_age?: number;
+    choices?: string[];
+    // Section custom only: a text box, a drop-down (with choices) or a tick box.
+    type?: 'text' | 'select' | 'checkbox';
+  };
+}
+
+export interface SignupFormSpecInput {
+  version?: 1;
+  name: string;
+  // The site it's on, as the project lists it. Leave out to match on every site.
+  site?: string;
+  // en (the default), de, fr, es, it, pt, nl, zh or ja.
+  language?: string;
+  // For country-dependent fields: IDs, VAT numbers, phones, addresses.
+  country?: string;
+  screens: Array<{ title?: string; path?: string; screen_id?: string; fields: SignupFormFieldInput[] }>;
+}
+
+// A spec as saved, with every default filled in.
+export interface SignupFormSpec {
+  version: 1;
+  name: string;
+  site: string | null;
+  language: string;
+  country: string | null;
+  screens: Array<{
+    title: string | null;
+    path: string | null;
+    screen_id: string | null;
+    fields: Array<Required<Omit<SignupFormFieldInput, 'options' | 'custom_field'>> & { custom_field?: string; options: NonNullable<SignupFormFieldInput['options']> }>;
+  }>;
+}
+
+// requested: a lead hasn't answered yet; draft: asked for and never approved.
+export type SignupFormStatus = 'saved' | 'requested' | 'draft';
+
+export interface SignupFormSummary {
+  id: string;
+  name: string;
+  status: SignupFormStatus;
+  site: string | null;
+  screens: number;
+  fields: number;
+  created_via: 'app' | 'extension' | 'agent' | 'api';
+  agent_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// A custom field a sign-up form needs, as the API gives it: matched by the
+// field's test id, on the form's site and page when it names a site.
+export interface SignupFormCustomField {
+  name: string;
+  match: { on: 'test_id'; text: string };
+  site?: string;
+  path?: string;
+  field_type: 'select' | 'checkbox' | 'text';
+  value: CustomFieldValue;
+}
+
+export interface SignupForm extends SignupFormSummary {
+  spec: SignupFormSpec;
+  // The custom fields the form needs.
+  custom_fields: SignupFormCustomField[];
+  // How each field gets its value: the built-in fill, one of the form's
+  // custom fields (a ready-made one for a phone, an ID or tax number, a
+  // choice or the terms box), or never (left for the test).
+  fills: Array<{ testid: string; section: string; fill: 'built_in' | 'custom_field' | 'never' }>;
+  // While a lead hasn't answered: what was asked, and the request.
+  requested?: { name: string; spec: SignupFormSpec; custom_fields: SignupFormCustomField[] };
+  request?: ChangeRequest;
+}
+
+export interface SignupForms {
+  locked: boolean;
+  you_lead: boolean;
+  forms: SignupFormSummary[];
+}
+
+// What fills each field a custom field fills, and what's left for the person
+// to decide (17 Nov 2026). made: the save makes a ready-made custom field;
+// form: a ready-made field a form made; yours: the project's own.
+export interface SignupFormFillPlan {
+  // named: a field with section custom; finds: whether its custom field finds it on the page.
+  fields_filled_by: Array<{
+    testid: string;
+    label: string;
+    filled_by: 'made' | 'form' | 'yours' | 'none';
+    custom_field?: { id: string; name: string };
+    named?: true;
+    finds?: boolean;
+  }>;
+  // The project's own custom field also fills the field, but the form's wins:
+  // ask the person, then save again with choices.
+  clashes: Array<{ testid: string; label: string; yours: { id: string; name: string }; form: { id: string; name: string } }>;
+  // Custom fields the form made and no longer uses: ask the person, then save again with tidy.
+  leftovers: Array<{ custom_field: { id: string; name: string }; testid: string; reason: 'gone' | 'renamed' | 'yours'; to?: string }>;
+  tidied?: { custom_fields_removed: string[]; custom_fields_moved: string[]; custom_fields_asked: string[]; custom_fields_kept: string[] };
+}
+export type SignupFormSaved = ({ status: 'saved'; form: SignupForm } | { status: 'requested'; form: SignupForm; request: ChangeRequest }) & SignupFormFillPlan;
+// choices: by a field's test id, 'yours' keeps the project's own custom field
+// on a clash, 'form' the form's. tidy: what to do with leftovers.
+export interface SaveSignupFormOptions {
+  choices?: Record<string, 'yours' | 'form'>;
+  tidy?: { remove?: string[]; move?: Array<{ id: string; testid: string }> };
+}
+
+// A sign-up form as code (New in 0.13.0): React with react-hook-form and zod,
+// React with plain state, or one HTML page.
+export type SignupCodeFormat = 'react-hook-form' | 'react' | 'html';
+
+export interface SignupFormCode {
+  form: { id: string; name: string; status: 'saved' | 'requested' | 'draft' };
+  format: SignupCodeFormat;
+  files: Array<{ path: string; contents: string }>;
+  // The npm packages the code imports.
+  dependencies: string[];
+  // What to know before putting it in, such as answers to set.
+  notes: string[];
+}
+
+// A starter to build a sign-up form from (New in 0.13.0).
+export type SignupStarterId = 'b2c' | 'b2b' | 'education' | 'marketplace' | 'travel' | 'fintech' | 'japan' | 'china';
+
+export interface SignupStarter {
+  id: SignupStarterId;
+  // The plan's row, such as FM-26.
+  item: string;
+  name: string;
+  description: string;
+  // What to know when building from it.
+  notes: string[];
+  spec: SignupFormSpec;
+}
+
+// Tests for a sign-up form (New in 0.13.0): Playwright or Cypress.
+export type SignupTestFramework = 'playwright' | 'cypress';
+
+export interface SignupFormTest {
+  form: SignupFormCode['form'];
+  framework: SignupTestFramework;
+  files: Array<{ path: string; contents: string }>;
+  // The npm packages the tests import.
+  dependencies: string[];
+  // How many values each kind of test tries.
+  counts: { refuse: number; take: number };
+  // What to know before running them, such as a value to put in.
+  notes: string[];
+}
 
 // One screen a site's sign-up goes over: a page's path, or a native app
 // screen's name. suggested: added by a fill or formValues, or waiting for a
@@ -376,6 +609,9 @@ export type ProjectInfo = Record<string, unknown> & {
   fill_unknown_fields?: FillUnknownFields;
   // The standard fields turned off (setStandardField).
   standard_fields_off?: StandardFieldName[];
+  // New in 0.13.0: true when the five ID and tax number ready-made custom
+  // fields are all there, for every site, and on.
+  fill_id_fields?: boolean;
   // Whether only leads change its sites and custom fields.
   locked?: boolean;
   // How many custom fields it has.
@@ -393,6 +629,9 @@ export interface FormValues {
   values: FormValue[];
   // When page or screen was sent: the sign-up screen it was recorded as, or null.
   screen?: SignupScreen | null;
+  // With kycSandbox: all of the vendor's values for the outcome, its phone,
+  // email and address ones included, to type where the test needs them.
+  kyc_sandbox?: KycSandbox;
 }
 
 // withAccount's options: the pool's filters, plus hooks your test code runs
@@ -464,6 +703,66 @@ export interface Match {
   // until (YYYY-MM-DD).
   discount?: string | null;
   valid_until?: string | null;
+  // Whether the verify, sign-in, invite or reset link (for a code, the
+  // email's own links) goes back to the site the test started on: expectSite,
+  // or the site the address was created with. Missing without a site.
+  link_site?: LinkSite;
+  // After markSubmitted: how long it took after the form was sent.
+  time_to_email?: TimeToEmail;
+}
+
+export type SubmitFlow = 'sign_up' | 'sign_in' | 'reset' | 'magic_link' | 'other';
+
+// A submit as markSubmitted recorded it; submitted_at is the server's time.
+export interface Submit {
+  id: string;
+  address: string;
+  flow: SubmitFlow;
+  site: string | null;
+  submitted_at: string;
+}
+
+// How long the email took after the form was sent, by the server's clock.
+export interface TimeToEmail {
+  submitted_at: string;
+  flow: SubmitFlow;
+  site: string | null;
+  source: 'extension' | 'agent';
+  after_seconds: number;
+  // The app and its email provider, and Proxy Mail QA, split at Cloudflare's
+  // mail server; null when the Received header couldn't be read.
+  their_seconds: number | null;
+  our_seconds: number | null;
+  // 2 or more: one submit brought several codes or links.
+  emails_for_submit: number;
+  position: number;
+  // A wait had already found nothing when it came.
+  after_wait_gave_up: boolean;
+  // The site's and flow's last 30 days in this project.
+  usual: {
+    submits: number;
+    arrived: number;
+    nothing: number;
+    median_seconds: number | null;
+    today_median_seconds: number | null;
+    slowest_seconds: number | null;
+    slower_than_usual: boolean;
+  };
+}
+
+export type LinkSiteProblem = 'local' | 'other_site' | 'preview' | 'published' | 'http' | 'bubble_live' | 'bubble_test';
+
+export interface LinkSite {
+  status: 'pass' | 'fail';
+  // When it fails: localhost from a hosted site, another site, the preview or
+  // the published app instead of the other, plain http, or Bubble's live app
+  // instead of version-test (bubble_live) or the other way (bubble_test).
+  problem?: LinkSiteProblem;
+  // What it was compared with, and where the link ends up, as host (and
+  // Bubble version): never the link's path or query.
+  site: string;
+  goes_to: string | null;
+  detail: string;
 }
 
 export interface CreateAddressInput {
@@ -485,6 +784,10 @@ export interface CreateAddressInput {
   dateOfBirth?: string;
   // Where the persona lives, as an ISO 3166-1 alpha-2 code such as GB.
   country?: string;
+  // A persona with one name and no family name (last_name null), as many
+  // people in India and Indonesia have. formValues then leaves a last name
+  // field empty with a note.
+  oneName?: boolean;
   // Where the account is used: the host or a page URL of the app under test
   // (kept as the host), and the environment, such as staging or local. A
   // site Proxy Mail QA doesn't work with (Instagram, TikTok, Google…) is
@@ -552,8 +855,25 @@ export interface DeliveryStatus {
   last_email_at: string | null;
   refused: Refusal[];
   hint: string;
+  // New in 0.13.0: when the last email came from a platform's built-in sender.
+  shared_sender?: SharedSender;
   help: string;
 }
+
+// New in 0.13.0: a platform's built-in sender (Supabase's, Firebase's,
+// Bubble's…) rather than the app's own email provider, with its cap and fix.
+export interface SharedSender {
+  platform: 'supabase' | 'firebase' | 'bubble' | 'glide' | 'base44' | 'cognito' | 'auth0';
+  name: string;
+  cap: string | null;
+  fix: string;
+  docs: string;
+}
+
+// New in 0.13.0: which case a wait that found nothing is. nothing_arrived:
+// nothing reached Proxy Mail QA (not sent, held by a sandbox or over a cap);
+// no_match: email arrived, so the app is sending, but none matched.
+export type NothingArrivedCase = 'nothing_arrived' | 'no_match' | 'turned_away' | 'already_used';
 
 export interface Variant {
   // What the variant checks, e.g. "An apostrophe".
@@ -582,6 +902,10 @@ export interface WaitOptions {
   // Only a code or link nobody has used yet: not returned by an earlier
   // wait, nor opened, copied or filled in the app or Proxy Mail QA for Chrome.
   unused?: boolean;
+  // The site the test started on, for link_site: staging.example.com,
+  // localhost:3000 or myapp.bubbleapps.io/version-test. Default: the site
+  // the address was created with.
+  expectSite?: string;
 }
 
 // waitForCode: a sign-in code (the default), a coupon or promo code, or either.
@@ -643,9 +967,11 @@ export type CheckId =
   | 'spf'
   | 'dkim'
   | 'dmarc'
+  | 'shared_sender'
   | 'local_links'
   | 'plain_http'
   | 'expected_host'
+  | 'link_site'
   | 'expiry'
   | 'coupon_expiry'
   | 'plain_text'
@@ -798,6 +1124,144 @@ export interface PasswordVariants {
   decide: FieldVariant[];
 }
 
+// The checks to run on a sign-up, password reset or magic-link flow, beyond
+// "the email arrived". Your test runs them through the app.
+export type Flow = 'sign_up' | 'password_reset' | 'magic_link';
+
+export interface FlowCheck {
+  // A stable name, such as code_works_once.
+  id: string;
+  checks: string;
+  // Only when the check can't always run: what it needs, and when to skip it.
+  needs?: string;
+  steps: string[];
+  expect: string;
+  why: string;
+}
+
+// New in 0.13.0: the field catalogue (listFormSections, getFormSection), the
+// sections a sign-up form may ask for and, for IDs and tax numbers by country,
+// a format rule and a fake value that never matches a real person. Check a
+// value with followsFormat, which runs here: never send a real ID anywhere.
+export type FormSectionGroup = 'person' | 'account' | 'business' | 'documents';
+// A: a published test value. B: a shape that's never issued. rule_only: the
+// rule and reject variants only. not_offered: nothing (Korea's RRN).
+export type FormSectionTier = 'A' | 'B' | 'rule_only' | 'not_offered';
+
+export interface FormSectionSummary {
+  id: string;
+  group: FormSectionGroup;
+  name: string;
+  source: 'persona' | 'generated' | 'choice' | 'id' | 'never';
+  labels: Record<string, string[]>;
+  note: string;
+  formats?: Array<{ country: string; name: string; shape: string; tier: FormSectionTier; tier_name: string }>;
+  // A section a ready-made custom field covers: the options its value takes,
+  // and whether only the project's leads add or change it.
+  ready_made?: { options: Array<'ids_from' | 'phones' | 'checked'>; leads_only: boolean; note: string };
+}
+
+export interface FormSection extends FormSectionSummary {
+  country: string | null;
+  format?: {
+    name: string;
+    shape: string;
+    pattern: string;
+    check: FormatCheck | null;
+    check_name: string | null;
+    tier: FormSectionTier;
+    tier_name: string;
+    note: string;
+  };
+  value?: {
+    // As people write it; null when none is given (see the note).
+    value: string | null;
+    compact: string | null;
+    // Every account gets the same value.
+    shared: boolean;
+    // A form that checks the issuer's rules more strictly refuses it.
+    fails_strict_checks: boolean;
+    // This account's own, where value is shared.
+    unique?: string;
+    source?: string;
+    url?: string;
+    // A published specimen to try as well, shared by every account.
+    specimen?: { value: string; source: string; url?: string };
+  };
+  // A passport value's expiry, holder and machine-readable lines (MRZ). The
+  // holder is the account's own when address is one of yours.
+  passport?: {
+    issuing_state: string;
+    expiry: string;
+    holder: { surname: string; given_names: string; date_of_birth: string; from: 'address' | 'made_up' };
+    mrz: [string, string];
+  };
+  variants?: { accept: FieldVariant[]; reject: FieldVariant[] };
+  says?: string;
+  // With kycSandbox: that vendor's sandbox values for the section.
+  kyc_sandbox?: KycSandbox;
+}
+
+// KYC sandbox mode (New in 0.13.0): a KYC vendor's published sandbox values,
+// for an app that checks identities with it. They're the vendor's values,
+// from its docs, for its test mode only.
+export type KycVendor = 'stripe' | 'plaid' | 'onfido' | 'veriff' | 'didit' | 'cashfree' | 'setu';
+export type KycOutcome = 'pass' | 'fail' | 'review';
+
+export interface KycSandbox {
+  vendor: KycVendor;
+  name: string;
+  product: string;
+  outcome: KycOutcome;
+  // "sandbox value from Stripe": say so wherever a value is shown.
+  label: string;
+  url: string;
+  note: string;
+  values: Array<{ section: string | null; field: string; value: string; outcome: KycOutcome; gives: string; needs?: string; country?: string; url: string }>;
+  says: string;
+}
+
+export type FormatCheck = 'verhoeff' | 'cpf' | 'cnpj' | 'gb11643' | 'my_number' | 'abn' | 'gb_vat' | 'icao';
+
+// New in 0.13.0: the clean-up list (cleanupList), every test address the
+// project used in a time range, live or gone, to delete those test users
+// from your app. Proxy Mail QA never touches your app.
+export interface CleanupList {
+  from: string;
+  to: string;
+  // The earliest from can be: 90 days ago.
+  kept_from: string;
+  count: number;
+  // More than 5,000 matched: narrow the range or give site.
+  truncated: boolean;
+  // The domains every test address ends in, to filter your users by.
+  mail_domains: string[];
+  addresses: Array<{
+    address: string;
+    created_at: string;
+    status: 'live' | 'expired' | 'deleted';
+    ended_at?: string;
+    site?: string;
+    environment?: string;
+    // Whether any email reached it: if so, your app very likely has a user for it.
+    had_email: boolean;
+  }>;
+}
+
+export interface CleanupListOptions {
+  // Addresses still live, or ended, on or after then (default 30 days ago; it can't go back past 90 days).
+  from?: Date | string;
+  // Addresses made on or before then (default now).
+  to?: Date | string;
+  // Only addresses used on this site, such as staging.example.com.
+  site?: string;
+}
+
+export interface FlowChecks {
+  flow: Flow;
+  checks: FlowCheck[];
+}
+
 export interface AddressAllowance {
   // True on Free.
   limited: boolean;
@@ -842,6 +1306,9 @@ export interface CheckOptions extends CountOptions {
   // The site its sign-in, verify, reset or invite link should go to, after
   // any redirect, e.g. staging.example.com. Without it, that check is skipped.
   expectHost?: string;
+  // The site the test started on, for the link_site check. Default: the
+  // site the address was created with; without either, it's skipped.
+  expectSite?: string;
   // Phrases the subject or body should contain (up to 10), such as the
   // user's first name. Case, curly quotes and spacing don't matter.
   expectText?: string[];
@@ -912,7 +1379,8 @@ export interface Run {
 
 // An API error. When a wait finds nothing, hint says why as far as Proxy Mail
 // QA can tell (an email provider in sandbox mode, say) and refused lists any
-// mail it turned away; both are in the message too.
+// mail it turned away; both are in the message too. From 0.13.0, why says
+// which case it is and sharedSender names a platform's built-in sender.
 export class ProxyMailQAError extends Error {
   constructor(
     readonly status: number,
@@ -921,6 +1389,8 @@ export class ProxyMailQAError extends Error {
     readonly hint?: string,
     readonly refused?: Refusal[],
     readonly help?: string,
+    readonly why?: NothingArrivedCase,
+    readonly sharedSender?: SharedSender,
   ) {
     super(hint ? `${message} ${hint}` : message);
     this.name = 'ProxyMailQAError';
@@ -988,9 +1458,26 @@ export class ProxyMailQA {
     });
     if (response.status === 204) return undefined as T;
     if ((response.headers.get('Content-Type') ?? '').startsWith('text/markdown') && response.ok) return (await response.text()) as T;
-    const payload = (await response.json().catch(() => ({}))) as { error?: string; message?: string; hint?: string; refused?: Refusal[]; help?: string };
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+      hint?: string;
+      refused?: Refusal[];
+      help?: string;
+      why?: NothingArrivedCase;
+      shared_sender?: SharedSender;
+    };
     if (!response.ok) {
-      throw new ProxyMailQAError(response.status, payload.error ?? 'error', payload.message ?? `Request failed with ${response.status}`, payload.hint, payload.refused, payload.help);
+      throw new ProxyMailQAError(
+        response.status,
+        payload.error ?? 'error',
+        payload.message ?? `Request failed with ${response.status}`,
+        payload.hint,
+        payload.refused,
+        payload.help,
+        payload.why,
+        payload.shared_sender,
+      );
     }
     return payload as T;
   }
@@ -1015,7 +1502,10 @@ export class ProxyMailQA {
   // fillUnknownFields (which fields formValues and Proxy Mail QA for Chrome
   // 0.9.0 and later guess) follows the custom fields' rules instead: anyone
   // on the project, unless only leads change them. Change it only when the
-  // person asks; for one call, pass guess to formValues.
+  // person asks; for one call, pass guess to formValues. fillIdFields (new in
+  // 0.13.0) true adds the five ID and tax number ready-made custom fields, or
+  // turns on those there, and false turns them off: a lead's key only, and
+  // only when the person asks.
   updateProject(patch: {
     name?: string;
     website?: string | null;
@@ -1023,13 +1513,15 @@ export class ProxyMailQA {
     emailPrefix?: string | null;
     mailDomain?: string;
     fillUnknownFields?: FillUnknownFields;
+    fillIdFields?: boolean;
   }) {
-    const { emailPrefix, mailDomain, fillUnknownFields, ...rest } = patch;
+    const { emailPrefix, mailDomain, fillUnknownFields, fillIdFields, ...rest } = patch;
     return this.request<ProjectInfo>('PATCH', '/project', {
       ...rest,
       ...(emailPrefix !== undefined ? { email_prefix: emailPrefix } : {}),
       ...(mailDomain !== undefined ? { mail_domain: mailDomain } : {}),
       ...(fillUnknownFields !== undefined ? { fill_unknown_fields: fillUnknownFields } : {}),
+      ...(fillIdFields !== undefined ? { fill_id_fields: fillIdFields } : {}),
     });
   }
 
@@ -1069,6 +1561,69 @@ export class ProxyMailQA {
   // is left empty, with no guess; a custom field that's on still fills it.
   setStandardField(field: StandardFieldName, on: boolean) {
     return this.request<StandardFieldSet>('PATCH', '/project/standard-fields', { field, on });
+  }
+
+  // The project's sign-up forms, newest change first (New in 0.13.0).
+  signupForms() {
+    return this.request<SignupForms>('GET', '/project/signup-forms');
+  }
+
+  // One sign-up form in full: its spec, the custom fields it needs and how
+  // each field gets its value (New in 0.13.0).
+  signupForm(id: string) {
+    return this.request<SignupForm>('GET', `/project/signup-forms/${encodeURIComponent(id)}`);
+  }
+
+  // Saves a sign-up form: a new one, the one with this id, or the one with the
+  // same name (New in 0.13.0). It uses a custom field that already fills a
+  // field and makes ready-made ones only where nothing does; the answer says
+  // what fills each, any clashes and any leftovers, for options.choices and
+  // options.tidy on a second save once the person says. Save one only when
+  // the person asks. On a project where only leads change custom fields and
+  // your key's creator isn't one, it's one request to the leads instead
+  // (status 'requested'), and the form waits as a draft.
+  saveSignupForm(spec: SignupFormSpecInput, id?: string, options: SaveSignupFormOptions = {}) {
+    return this.request<SignupFormSaved>('POST', '/project/signup-forms', {
+      spec,
+      ...(id ? { id } : {}),
+      ...(options.choices ? { choices: options.choices } : {}),
+      ...(options.tidy ? { tidy: options.tidy } : {}),
+    });
+  }
+
+  // Removes a sign-up form: whoever made it or a lead (New in 0.13.0). Its
+  // custom fields stay, unless removeCustomFields: then they go too, except
+  // any another form still uses, and the answer names those removed and kept.
+  deleteSignupForm(id: string, options: { removeCustomFields?: boolean } = {}) {
+    const query = options.removeCustomFields ? '?remove_custom_fields=true' : '';
+    return this.request<{ status: 'removed'; id: string; custom_fields_removed: string[]; custom_fields_asked: string[]; custom_fields_kept: string[] }>(
+      'DELETE',
+      `/project/signup-forms/${encodeURIComponent(id)}${query}`,
+    );
+  }
+
+  // A sign-up form as code to put in your app (New in 0.13.0): each field
+  // checks what the spec asks for, with messages in the form's language and
+  // the data-testid its custom fields match. format defaults to
+  // 'react-hook-form'; requested: true gives the change waiting for a lead.
+  signupFormCode(id: string, options: { format?: SignupCodeFormat; requested?: boolean } = {}) {
+    const query = new URLSearchParams();
+    if (options.format) query.set('format', options.format);
+    if (options.requested) query.set('requested', 'true');
+    const search = query.toString();
+    return this.request<SignupFormCode>('GET', `/project/signup-forms/${encodeURIComponent(id)}/code${search ? `?${search}` : ''}`);
+  }
+
+  // Tests for a sign-up form (New in 0.13.0): each field gets values the form
+  // should take and ones it should refuse, with every other field filled in
+  // from a new test address. framework defaults to 'playwright';
+  // requested: true gives the change waiting for a lead.
+  signupFormTest(id: string, options: { framework?: SignupTestFramework; requested?: boolean } = {}) {
+    const query = new URLSearchParams();
+    if (options.framework) query.set('framework', options.framework);
+    if (options.requested) query.set('requested', 'true');
+    const search = query.toString();
+    return this.request<SignupFormTest>('GET', `/project/signup-forms/${encodeURIComponent(id)}/test${search ? `?${search}` : ''}`);
   }
 
   // The project's sites, each with whether Proxy Mail QA for Chrome 0.9.0 and
@@ -1128,6 +1683,7 @@ export class ProxyMailQA {
       age: input.age,
       date_of_birth: input.dateOfBirth,
       country: input.country,
+      one_name: input.oneName,
       site: input.site,
       environment: input.environment,
     });
@@ -1167,12 +1723,15 @@ export class ProxyMailQA {
       page: options.page,
       screen: options.screen,
       guess: options.guess,
+      kyc_sandbox: options.kycSandbox,
+      kyc_outcome: options.kycOutcome,
       label: options.label,
       lifetime_days: options.lifetimeDays,
       domain: options.domain,
       age: options.age,
       date_of_birth: options.dateOfBirth,
       country: options.country,
+      one_name: options.oneName,
       site: options.site,
       environment: options.environment,
     });
@@ -1210,6 +1769,74 @@ export class ProxyMailQA {
 
   // Marks a host (localhost:3000, say) as a dev environment of the project:
   // links to it then pass checkEmail's local-links check instead of failing.
+  // An authenticator app's code (TOTP, RFC 6238) for a test account with
+  // two-factor sign-in, worked out on this machine from the secret the app
+  // showed at set-up (its base32 key, or the otpauth:// address in its QR
+  // code). The secret never reaches Proxy Mail QA. The same as the
+  // totpCode function; here so a test with a client needs no other import.
+  totpCode(secret: string, options: TotpOptions = {}) {
+    return totpCode(secret, options);
+  }
+
+  // Starters to build a sign-up form from (New in 0.13.0): every one, or one
+  // by id, in a language or for a country. Save your version with
+  // saveSignupForm.
+  signupStarters(options: { id?: SignupStarterId; language?: string; country?: string } = {}) {
+    const q = new URLSearchParams();
+    if (options.id) q.set('id', options.id);
+    if (options.language) q.set('language', options.language);
+    if (options.country) q.set('country', options.country);
+    const query = q.toString();
+    return this.request<{ starters: SignupStarter[] }>('GET', `/signup-starters${query ? `?${query}` : ''}`);
+  }
+
+  // The field sections a sign-up form may ask for, by group, with the
+  // countries each ID or tax number has formats for (New in 0.13.0).
+  // kycSandbox adds that KYC vendor's sandbox values for kycOutcome.
+  listFormSections(options: { country?: string; group?: FormSectionGroup; kycSandbox?: KycVendor; kycOutcome?: KycOutcome } = {}) {
+    const q = new URLSearchParams();
+    if (options.country) q.set('country', options.country);
+    if (options.group) q.set('group', options.group);
+    if (options.kycSandbox) q.set('kyc_sandbox', options.kycSandbox);
+    if (options.kycOutcome) q.set('kyc_outcome', options.kycOutcome);
+    const query = q.toString();
+    return this.request<{ country: string | null; group: FormSectionGroup | null; sections: FormSectionSummary[]; kyc_sandbox?: KycSandbox }>(
+      'GET',
+      `/form-sections${query ? `?${query}` : ''}`,
+    );
+  }
+
+  // One section: for an ID or tax number, its format in a country, a fake
+  // value that follows it, and variants. Give address to keep the value the
+  // same for that test account (New in 0.13.0).
+  getFormSection(id: string, options: { country?: string; address?: string; kycSandbox?: KycVendor; kycOutcome?: KycOutcome } = {}) {
+    const q = new URLSearchParams();
+    if (options.country) q.set('country', options.country);
+    if (options.address) q.set('address', options.address);
+    if (options.kycSandbox) q.set('kyc_sandbox', options.kycSandbox);
+    if (options.kycOutcome) q.set('kyc_outcome', options.kycOutcome);
+    const query = q.toString();
+    return this.request<FormSection>('GET', `/form-sections/${encodeURIComponent(id)}${query ? `?${query}` : ''}`);
+  }
+
+  // Whether a value follows a format from getFormSection, worked out here;
+  // the same as the followsFormat function (New in 0.13.0).
+  followsFormat(format: { pattern: string; check: FormatCheck | null }, value: string) {
+    return followsFormat(format, value);
+  }
+
+  // The test addresses this project used between from and to, to delete
+  // those test users from your app afterwards (New in 0.13.0).
+  cleanupList(options: CleanupListOptions = {}) {
+    const q = new URLSearchParams();
+    const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
+    if (options.from !== undefined) q.set('from', iso(options.from));
+    if (options.to !== undefined) q.set('to', iso(options.to));
+    if (options.site) q.set('site', options.site);
+    const query = q.toString();
+    return this.request<CleanupList>('GET', `/cleanup-list${query ? `?${query}` : ''}`);
+  }
+
   markDevHost(host: string) {
     return this.request<{ dev_hosts: string[] }>('POST', '/project/dev-hosts', { host });
   }
@@ -1393,6 +2020,17 @@ export class ProxyMailQA {
     return this.request<void>('DELETE', `/addresses/${encodeURIComponent(address)}`);
   }
 
+  // Records that the test has just submitted a form with the address (a
+  // sign-up unless flow says otherwise), on site (a page URL, kept as host and
+  // path, with any part of the path that has an email address, an ID, a long
+  // number or a token in it hidden; never its query or fragment). The time is the
+  // server's: the wait that finds the code or link then returns
+  // time_to_email. Pass its submitted_at as since. Never send the form's
+  // contents.
+  markSubmitted(address: string, options: { flow?: SubmitFlow; site?: string } = {}) {
+    return this.request<Submit>('POST', `/addresses/${encodeURIComponent(address)}/submits`, { flow: options.flow, site: options.site });
+  }
+
   // Waits for a verification or login code; throws ProxyMailQAError (404) if
   // none arrives in time.
   // The newest sign-in or verification code; with type: 'coupon', the
@@ -1431,7 +2069,8 @@ export class ProxyMailQA {
   }
 
   // Checks one email the address received: SPF, DKIM and DMARC, links to
-  // localhost or plain http, where its link goes (expectHost), a stated
+  // localhost or plain http, where its link goes (expectHost) and whether
+  // it goes back to the site the test started on (link_site), a stated
   // expiry, a plain-text part, size and image-only emails, and given phrases
   // (expectText) and its language (expectLanguage). Doesn't wait: wait for
   // the email first. Throws ProxyMailQAError (404) when none matches.
@@ -1439,6 +2078,7 @@ export class ProxyMailQA {
     const extra: Record<string, string> = {};
     if (options.emailId) extra.email_id = options.emailId;
     if (options.expectHost) extra.expect_host = options.expectHost;
+    if (options.expectSite) extra.expect_site = options.expectSite;
     if (options.expectLanguage) extra.expect_language = options.expectLanguage;
     if (options.expectWithin !== undefined) extra.expect_within = String(options.expectWithin);
     let query = countQuery(options, extra);
@@ -1588,6 +2228,13 @@ export class ProxyMailQA {
     return this.request<PasswordVariants>('GET', `/variants/passwords${suffix}`);
   }
 
+  // The checks to run on a sign-up, password reset or magic-link flow: a
+  // code working once, only the newest reset link working, a second person
+  // unable to see the first one's data. Each has steps, what to expect and why.
+  flowChecks(flow: Flow) {
+    return this.request<FlowChecks>('GET', `/flow-checks?flow=${encodeURIComponent(flow)}`);
+  }
+
   // Saves the password the test account uses now, after the app under test
   // changed or reset it. Without one, a strong password is generated and
   // returned this once.
@@ -1685,6 +2332,7 @@ export class ProxyMailQA {
       if (type) query.set('type', type);
       if (app !== undefined) query.set('app', String(app));
       if (options.unused) query.set('unused', 'true');
+      if (options.expectSite) query.set('expect_site', options.expectSite);
       const more = Date.now() + left * 1000 < deadline - 500;
       try {
         return await this.request<Match>('GET', `/addresses/${encodeURIComponent(address)}/${kind}?${query}`, undefined, more);
@@ -1705,3 +2353,156 @@ function age(dateOfBirth: string | null | undefined): number | null {
   const now = new Date();
   return now.getUTCFullYear() - y! - (now.getUTCMonth() + 1 < m! || (now.getUTCMonth() + 1 === m && now.getUTCDate() < d!) ? 1 : 0);
 }
+
+// Two-factor codes (FM-3): an authenticator app's six-digit code, worked out
+// here, so the secret never leaves the tester's machine. RFC 6238 (TOTP) over
+// RFC 4226 (HOTP); checked against RFC 6238's own test values.
+export type TotpAlgorithm = 'SHA-1' | 'SHA-256' | 'SHA-512';
+
+export interface TotpOptions {
+  // 6 unless the app says otherwise (an otpauth:// address can).
+  digits?: number;
+  // Seconds each code lasts: 30 unless the app says otherwise.
+  period?: number;
+  algorithm?: TotpAlgorithm;
+  // The moment to work it out for. Default: now.
+  at?: Date | number;
+  // Wait for the next code when this one has fewer seconds left, so it
+  // doesn't run out between working it out and the app checking it (5 is
+  // plenty for most tests). Only without at.
+  minSecondsLeft?: number;
+}
+
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Bytes(secret: string): Uint8Array<ArrayBuffer> {
+  const clean = secret.replace(/[\s-]/g, '').replace(/=+$/, '').toUpperCase();
+  if (!clean) throw new Error('The TOTP secret is empty.');
+  let bits = 0;
+  let value = 0;
+  const out: number[] = [];
+  for (const char of clean) {
+    const index = BASE32.indexOf(char);
+    if (index < 0) throw new Error('The TOTP secret must be base32 (A to Z and 2 to 7), as the app shows it, or its otpauth:// address.');
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return new Uint8Array(out);
+}
+
+// The secret and any digits, period and algorithm an otpauth:// address gives.
+function readTotpSecret(secret: string): { key: string; digits?: number; period?: number; algorithm?: TotpAlgorithm } {
+  if (!/^otpauth:\/\//i.test(secret.trim())) return { key: secret };
+  const url = new URL(secret.trim());
+  if (url.hostname.toLowerCase() !== 'totp') throw new Error('Only otpauth://totp/ addresses are time-based codes.');
+  const key = url.searchParams.get('secret');
+  if (!key) throw new Error('The otpauth:// address has no secret.');
+  const algorithm = url.searchParams.get('algorithm')?.toUpperCase().replace(/^SHA(\d)/, 'SHA-$1') as TotpAlgorithm | undefined;
+  const number = (name: string) => (url.searchParams.has(name) ? Number(url.searchParams.get(name)) : undefined);
+  return { key, digits: number('digits'), period: number('period'), algorithm };
+}
+
+async function hmac(algorithm: TotpAlgorithm, key: Uint8Array<ArrayBuffer>, message: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
+  // Node 18 has Web Crypto only through node:crypto.
+  const subtle =
+    globalThis.crypto?.subtle ?? ((await import(/* @vite-ignore */ 'node:crypto' as string)) as { webcrypto: { subtle: typeof globalThis.crypto.subtle } }).webcrypto.subtle;
+  const cryptoKey = await subtle.importKey('raw', key, { name: 'HMAC', hash: algorithm }, false, ['sign']);
+  return new Uint8Array(await subtle.sign('HMAC', cryptoKey, message));
+}
+
+export async function totpCode(secret: string, options: TotpOptions = {}): Promise<string> {
+  const given = readTotpSecret(secret);
+  const digits = options.digits ?? given.digits ?? 6;
+  const period = options.period ?? given.period ?? 30;
+  const algorithm = options.algorithm ?? given.algorithm ?? 'SHA-1';
+  if (!Number.isInteger(digits) || digits < 6 || digits > 10) throw new Error('digits must be a whole number from 6 to 10.');
+  if (!Number.isInteger(period) || period < 1) throw new Error('period must be a whole number of seconds.');
+  if (!['SHA-1', 'SHA-256', 'SHA-512'].includes(algorithm)) throw new Error('algorithm must be SHA-1, SHA-256 or SHA-512.');
+  const key = base32Bytes(given.key);
+  let ms = options.at === undefined ? Date.now() : options.at instanceof Date ? options.at.getTime() : options.at;
+  if (options.at === undefined && options.minSecondsLeft) {
+    const left = period - ((ms / 1000) % period);
+    if (left < Math.min(options.minSecondsLeft, period)) {
+      await new Promise((resolve) => setTimeout(resolve, Math.ceil(left * 1000) + 50));
+      ms = Date.now();
+    }
+  }
+  const counter = Math.floor(ms / 1000 / period);
+  const message = new Uint8Array(8);
+  new DataView(message.buffer).setBigUint64(0, BigInt(counter));
+  const mac = await hmac(algorithm, key, message);
+  const offset = mac[mac.length - 1]! & 0x0f;
+  const binary = ((mac[offset]! & 0x7f) << 24) | (mac[offset + 1]! << 16) | (mac[offset + 2]! << 8) | mac[offset + 3]!;
+  return String(binary % 10 ** digits).padStart(digits, '0');
+}
+
+// Whether a value follows a format from getFormSection: its shape and, where
+// there is one, its check digit. It runs here, so an ID never leaves this
+// machine. Following the format isn't being valid: only the issuer knows
+// whether a number was given to anyone (New in 0.13.0).
+export function followsFormat(format: { pattern: string; check: FormatCheck | null; name?: string; shape?: string }, value: string): { follows: boolean; problem?: string } {
+  const compact = value.normalize('NFKC').toUpperCase().replace(/[\s.\-/]/g, '');
+  if (!new RegExp(format.pattern).test(compact)) return { follows: false, problem: `It doesn’t have the shape${format.shape ? ` (${format.shape})` : ''}.` };
+  if (format.check && !FORMAT_CHECKS[format.check](compact)) return { follows: false, problem: 'Its check digit is wrong.' };
+  return { follows: true };
+}
+
+const numbers = (value: string) => [...value].map(Number);
+const VERHOEFF_D = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 0, 6, 7, 8, 9, 5], [2, 3, 4, 0, 1, 7, 8, 9, 5, 6], [3, 4, 0, 1, 2, 8, 9, 5, 6, 7], [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
+  [5, 9, 8, 7, 6, 0, 4, 3, 2, 1], [6, 5, 9, 8, 7, 1, 0, 4, 3, 2], [7, 6, 5, 9, 8, 2, 1, 0, 4, 3], [8, 7, 6, 5, 9, 3, 2, 1, 0, 4], [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+];
+const VERHOEFF_P = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 5, 7, 6, 2, 8, 3, 0, 9, 4], [5, 8, 0, 3, 7, 9, 6, 1, 4, 2], [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
+  [9, 4, 5, 3, 1, 2, 6, 8, 7, 0], [4, 2, 8, 6, 5, 7, 3, 9, 0, 1], [2, 7, 9, 3, 8, 0, 6, 4, 1, 5], [7, 0, 4, 6, 9, 1, 3, 2, 8, 5],
+];
+const mod11 = (value: string) => {
+  const sum = numbers(value).reduce((total, n, i) => total + n * (value.length + 1 - i), 0);
+  const r = (sum * 10) % 11;
+  return String(r === 10 ? 0 : r);
+};
+const cnpjDigit = (value: string) => {
+  let sum = 0;
+  [...value].reverse().forEach((char, i) => (sum += (char.charCodeAt(0) - 48) * (2 + (i % 8))));
+  const r = sum % 11;
+  return String(r < 2 ? 0 : 11 - r);
+};
+const icao = (value: string) => {
+  let sum = 0;
+  [...value].forEach((char, i) => (sum += (char === '<' ? 0 : /\d/.test(char) ? Number(char) : char.charCodeAt(0) - 55) * [7, 3, 1][i % 3]!));
+  return String(sum % 10);
+};
+const FORMAT_CHECKS: Record<FormatCheck, (value: string) => boolean> = {
+  verhoeff: (value) => {
+    let c = 0;
+    numbers(value)
+      .reverse()
+      .forEach((n, i) => (c = VERHOEFF_D[c]![VERHOEFF_P[i % 8]![n]!]!));
+    return c === 0;
+  },
+  cpf: (value) => {
+    const first = mod11(value.slice(0, 9));
+    return value.slice(9) === first + mod11(value.slice(0, 9) + first);
+  },
+  cnpj: (value) => {
+    const first = cnpjDigit(value.slice(0, 12));
+    return value.slice(12) === first + cnpjDigit(value.slice(0, 12) + first);
+  },
+  gb11643: (value) =>
+    value.slice(-1) === '10X98765432'[numbers(value.slice(0, 17)).reduce((total, n, i) => total + n * [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2][i]!, 0) % 11],
+  my_number: (value) => {
+    const r = numbers(value.slice(0, 11)).reverse().reduce((total, n, i) => total + n * (i < 6 ? i + 2 : i - 4), 0) % 11;
+    return value.slice(-1) === String(r <= 1 ? 0 : 11 - r);
+  },
+  abn: (value) => numbers(value).reduce((total, n, i) => total + (i === 0 ? n - 1 : n) * [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19][i]!, 0) % 89 === 0,
+  gb_vat: (value) => {
+    const nine = value.replace(/^GB/, '');
+    const sum = numbers(nine.slice(0, 7)).reduce((total, n, i) => total + n * (8 - i), 0) + Number(nine.slice(7, 9));
+    return sum % 97 === 0 || (sum + 55) % 97 === 0;
+  },
+  icao: (value) => value.slice(-1) === icao(value.slice(0, -1)),
+};

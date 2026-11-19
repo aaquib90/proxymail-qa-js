@@ -1,7 +1,7 @@
 {
   "name": "proxymail-qa",
-  "version": "0.12.0",
-  "description": "Test every email your app sends from Playwright, Cypress, Jest, Vitest or any Node script: disposable inboxes, sign-up codes, links and coupons, email checks, unsubscribe tests and run reports.",
+  "version": "0.13.0",
+  "description": "Test every email your app sends from Playwright, Cypress, Jest, Vitest, any Node script or the command line: disposable inboxes, sign-up codes, links and coupons, email checks, unsubscribe tests and run reports.",
   "license": "MIT",
   "author": "Proxy Mail QA <hello@proxymail.qa> (https://proxymail.qa)",
   "homepage": "https://proxymail.qa/docs/node",
@@ -32,11 +32,16 @@
     "coupon",
     "unsubscribe",
     "marketing email",
-    "qa"
+    "qa",
+    "cli",
+    "cypress commands"
   ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "proxymail-qa": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -49,6 +54,14 @@
     "./playwright/reporter": {
       "types": "./dist/playwright-reporter.d.ts",
       "default": "./dist/playwright-reporter.js"
+    },
+    "./cypress": {
+      "types": "./dist/cypress.d.ts",
+      "default": "./dist/cypress.js"
+    },
+    "./cypress/plugin": {
+      "types": "./dist/cypress-plugin.d.ts",
+      "default": "./dist/cypress-plugin.js"
     }
   },
   "files": [
@@ -56,7 +69,9 @@
     "README.md",
     "LICENSE"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/cypress.js"
+  ],
   "engines": {
     "node": ">=18"
   },
