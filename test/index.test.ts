@@ -260,6 +260,46 @@ describe('ProxyMailQA', () => {
     expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/cleanup-list');
   });
 
+  it('reads a site’s journey with the page’s filter names, a comma inside a tag kept', async () => {
+    const answer = { showing: 'Showing 2 of 7 test accounts on staging.example.com: Country: DE.', phases: [] };
+    const { fetch, qa } = client([Response.json(answer), Response.json(answer)]);
+    expect(
+      await qa.journey({ site: 'staging.example.com', phase: 'after_signup', country: ['DE', 'AT'], age: ['18-24'], ageUnknown: true, anyTags: ['vip', 'a,b'], notGotStep: ['after_signup:offer:1a2b3c4d'] }),
+    ).toEqual(answer);
+    const url = new URL(String(fetch.mock.calls[0]![0]));
+    expect(url.pathname).toBe('/v1/journeys');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      site: 'staging.example.com',
+      phase: 'after_signup',
+      country: 'DE,AT',
+      age: '18-24',
+      age_unknown: '1',
+      any_tags: 'vip,a%2Cb',
+      not_got_step: 'after_signup:offer:1a2b3c4d',
+    });
+    await qa.journey();
+    expect(String(fetch.mock.calls[1]![0])).toBe('https://api.test/v1/journeys');
+  });
+
+  it('takes a split path’s filter back as it is, and builds the same address as the page’s names', async () => {
+    const { fetch, qa } = client([Response.json({}), Response.json({})]);
+    const steps = { gotStep: ['after_signup:welcome:1a2b3c4d'], notGotStep: ['after_signup:offer:5e6f7a8b'] };
+    await qa.journey({ site: 'staging.example.com', country: ['DE', 'GB'], countryUnknown: true, age: ['18-24'], ageUnknown: true, anyTags: ['a,b'], ...steps });
+    await qa.journey({
+      site: 'staging.example.com',
+      country: ['DE', 'GB'],
+      country_unknown: true,
+      age: ['18-24'],
+      age_unknown: true,
+      any_tags: ['a,b'],
+      got_step: steps.gotStep,
+      not_got_step: steps.notGotStep,
+    });
+    const [camel, snake] = fetch.mock.calls.map((call) => String(call[0]));
+    expect(snake).toBe(camel);
+    expect(Object.fromEntries(new URL(snake!).searchParams)).toMatchObject({ country: 'DE,GB', country_unknown: '1', any_tags: 'a%2Cb' });
+  });
+
   it('lists form sections and gets one, and checks a value here', async () => {
     const section = { id: 'id.national', country: 'BR', format: { pattern: '^[0-9]{11}$', check: 'cpf' } };
     const { fetch, qa } = client([Response.json({ country: 'IN', group: 'documents', sections: [] }), Response.json(section), Response.json(section), Response.json({ values: [] })]);

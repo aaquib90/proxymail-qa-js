@@ -21,7 +21,8 @@ it. Then:
 - group tests into a run whose report says which test each email came from
 
 Checkout results, offers given twice, unsubscribing, consent, welcome series,
-the marketing checks and the spam score are in
+the marketing checks, the spam score and a site's journey (with its five
+good-practice checks) are in
 [Labs](https://proxymail.qa/docs/labs) for now: the key's creator switches
 them on in the app under Account settings → Labs. Until then those methods
 throw with a 403 that says so, and `checkEmail` leaves those checks out.

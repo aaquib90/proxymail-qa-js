@@ -251,7 +251,8 @@ export type CustomFieldValue =
   // Leave the field as it is.
   | { kind: 'leave' }
   // New in 0.13.0: a ready-made custom field, Proxy Mail QA's own safe value
-  // for every field of one kind (match { on: 'kind', text: section }).
+  // for every field of one kind, where it has one
+  // (match { on: 'kind', text: section }).
   | ReadyMadeValue;
 
 // The sections a ready-made custom field fills, as listFormSections names them.
@@ -275,8 +276,9 @@ export type ReadyMadeIdsFrom = 'safe' | 'stripe' | 'plaid' | 'onfido' | 'veriff'
 export interface ReadyMadeValue {
   kind: 'ready_made';
   section: ReadyMadeSection;
-  // ID and tax numbers only: safe (the default), a fake value that never
-  // matches a real person, or a KYC vendor's sandbox values for its test mode.
+  // ID and tax numbers only: safe (the default), a fake value only where one
+  // can never be a real person's, or a KYC vendor's sandbox values for its
+  // test mode.
   ids_from?: ReadyMadeIdsFrom;
   // Phone number only: up to 20 test numbers your app accepts, one per
   // country (two-letter code), for accounts in countries with no numbers set
@@ -873,7 +875,12 @@ export interface SharedSender {
 // New in 0.13.0: which case a wait that found nothing is. nothing_arrived:
 // nothing reached Proxy Mail QA (not sent, held by a sandbox or over a cap);
 // no_match: email arrived, so the app is sending, but none matched.
-export type NothingArrivedCase = 'nothing_arrived' | 'no_match' | 'turned_away' | 'already_used';
+// arrived_before_since, new in the next release (0.13.0 passes the value on,
+// but its type lacks it): an unused one came shortly before since, up to 2
+// minutes before it or before now when since is ahead of Proxy Mail QA's
+// clock. So since was probably set after the form was sent, or is ahead (the
+// hint says when).
+export type NothingArrivedCase = 'nothing_arrived' | 'no_match' | 'turned_away' | 'already_used' | 'arrived_before_since';
 
 export interface Variant {
   // What the variant checks, e.g. "An apostrophe".
@@ -999,7 +1006,13 @@ export type CheckId =
   | 'harmful_attachment'
   | 'spam_risk'
   | 'misleading_subject'
-  | 'ad_label';
+  | 'ad_label'
+  // Good practice, as warnings (Journeys, in Labs).
+  | 'code_length'
+  | 'link_length'
+  | 'auth_length'
+  | 'subject_length'
+  | 'one_action';
 
 export interface EmailCheck {
   check: CheckId;
@@ -1141,11 +1154,12 @@ export interface FlowCheck {
 
 // New in 0.13.0: the field catalogue (listFormSections, getFormSection), the
 // sections a sign-up form may ask for and, for IDs and tax numbers by country,
-// a format rule and a fake value that never matches a real person. Check a
-// value with followsFormat, which runs here: never send a real ID anywhere.
+// a format rule and a fake value only where one can never be a real person's.
+// Check a value with followsFormat, which runs here: never send a real ID
+// anywhere.
 export type FormSectionGroup = 'person' | 'account' | 'business' | 'documents';
 // A: a published test value. B: a shape that's never issued. rule_only: the
-// rule and reject variants only. not_offered: nothing (Korea's RRN).
+// rule and any reject variants, but no value. not_offered: nothing (Korea's RRN).
 export type FormSectionTier = 'A' | 'B' | 'rule_only' | 'not_offered';
 
 export interface FormSectionSummary {
@@ -1260,6 +1274,102 @@ export interface CleanupListOptions {
 export interface FlowChecks {
   flow: Flow;
   checks: FlowCheck[];
+}
+
+// New in 0.14.0, with the Journeys Lab: a site's journey (journey), as the
+// Journeys page draws it. Steps are named by kind, sender and key, never by
+// subject. Labels, tags and sender names come from your project's members and
+// from whoever sent the mail.
+export type JourneyPhase = 'after_signup' | 'signing_in' | 'password_reset' | 'invites' | 'ongoing';
+export type JourneyAgeBand = 'under-18' | '18-24' | '25-34' | '35-44' | '45-54' | '55-plus';
+
+export interface JourneyOptions {
+  // The journey: a site's host, or sender:<domain> for accounts with no site (default: the first listed).
+  site?: string;
+  // Only this phase's steps; the sentence and the counts stay whole.
+  phase?: JourneyPhase;
+  // Accounts in any of these countries (ISO 3166-1 alpha-2).
+  country?: string[];
+  // Accounts with no country.
+  countryUnknown?: boolean;
+  // Accounts in any of these age bands, by their age today.
+  age?: JourneyAgeBand[];
+  // Accounts with no date of birth.
+  ageUnknown?: boolean;
+  // Accounts with any one of these tags.
+  anyTags?: string[];
+  // One account's own journey: the other filters are then ignored.
+  address?: string;
+  // Accounts that got every one of these steps, by key.
+  gotStep?: string[];
+  // Accounts that got none of these steps, by key.
+  notGotStep?: string[];
+}
+
+export interface JourneyStepOut {
+  type: 'step';
+  key: string;
+  kind: string;
+  kind_name: string;
+  sender: string;
+  got: number;
+  // Accounts it is counted out of; null for a section's first step outside After sign-up.
+  of: number | null;
+  // One account's wait, the middle of two, or the median of three or more.
+  wait: { ms: number; kind: 'one' | 'two' | 'usual' | null; all_ms: number[]; range_ms?: [number, number]; from: string } | null;
+  countries: Record<string, number>;
+  age_bands: Record<string, number>;
+  still_due: { addresses: string[]; left_out: number; usually_after_ms: number | null };
+  // null where it can't be said: the 5,000-email limit cut mail, or nobody has to ask for this step.
+  did_not_get: { addresses: string[]; left_out: number } | null;
+  warnings: Array<{ id: string; text: string }>;
+  emails: Array<{ id: string; address: string; received_at: string }>;
+  emails_left_out?: number;
+}
+
+// A split path's filter: the journey and filter that show the path alone, with
+// get_journey's names. journey() takes it as it is: qa.journey(path.filter).
+export interface JourneyPathFilter {
+  site: string;
+  country?: string[];
+  country_unknown?: boolean;
+  age?: JourneyAgeBand[];
+  age_unknown?: boolean;
+  any_tags?: string[];
+  address?: string;
+  got_step?: string[];
+  not_got_step?: string[];
+}
+
+export interface JourneySplit {
+  type: 'split';
+  by: 'country' | 'age band' | 'tag';
+  // query: the same as filter, as GET /v1/journeys' query string.
+  paths: Array<{ label: string; accounts: number; filter: JourneyPathFilter; query: string; steps: JourneyStepOut[] }>;
+}
+
+export interface Journey {
+  // The page's sentence, with a step in it named by kind, sender and key:
+  // "Showing 2 of 7 test accounts on staging.example.com: Country: DE."
+  showing: string;
+  notes: string[];
+  // Opens the Journeys page on this view.
+  link: string;
+  journey: string;
+  name: string;
+  by: 'site' | 'sender';
+  journeys: Array<{ journey: string; name: string; by: 'site' | 'sender'; accounts: number }>;
+  accounts: { shown: number; total: number; with_no_email: number };
+  emails: number;
+  // The 5,000-email limit left the oldest mail out, so did_not_get is null.
+  truncated: boolean;
+  filters_left_off: number;
+  // Accounts with no country or no date of birth are under country_unknown and
+  // age_unknown (countryUnknown and ageUnknown ask for them), only while there are some.
+  filter_values: Record<'country' | 'age' | 'tags', Array<{ value: string; accounts: number; chosen?: boolean }>> &
+    Partial<Record<'country_unknown' | 'age_unknown', { accounts: number; chosen?: boolean }>>;
+  phases: Array<{ phase: JourneyPhase; name: string; started_by: string; steps: Array<JourneyStepOut | JourneySplit> }>;
+  good_practice: Array<{ rule: string; name: string; checked: number; warned: number }>;
 }
 
 export interface AddressAllowance {
@@ -1807,8 +1917,9 @@ export class ProxyMailQA {
   }
 
   // One section: for an ID or tax number, its format in a country, a fake
-  // value that follows it, and variants. Give address to keep the value the
-  // same for that test account (New in 0.13.0).
+  // value that follows it, given only where one can never be a real person's, and
+  // variants. Give address to keep the value the same for that test account
+  // (New in 0.13.0).
   getFormSection(id: string, options: { country?: string; address?: string; kycSandbox?: KycVendor; kycOutcome?: KycOutcome } = {}) {
     const q = new URLSearchParams();
     if (options.country) q.set('country', options.country);
@@ -1835,6 +1946,31 @@ export class ProxyMailQA {
     if (options.site) q.set('site', options.site);
     const query = q.toString();
     return this.request<CleanupList>('GET', `/cleanup-list${query ? `?${query}` : ''}`);
+  }
+
+  // A site's journey, as the Journeys page draws it, for all the project's
+  // test accounts or the ones the options pick (Journeys Lab; new in 0.14.0).
+  // A split path's filter works as the options too.
+  journey(options: JourneyOptions | JourneyPathFilter = {}) {
+    const o = options as JourneyOptions & Partial<JourneyPathFilter>;
+    const q = new URLSearchParams();
+    // A comma inside a value is written %2C, as the page's address writes it.
+    const list = (items?: readonly string[]) => (items?.length ? items.map((item) => item.replace(/%/g, '%25').replace(/,/g, '%2C')).join(',') : null);
+    const put = (name: string, value: string | null | undefined) => {
+      if (value) q.set(name, value);
+    };
+    put('site', o.site);
+    put('phase', o.phase);
+    put('country', list(o.country));
+    put('country_unknown', o.countryUnknown || o.country_unknown ? '1' : null);
+    put('age', list(o.age));
+    put('age_unknown', o.ageUnknown || o.age_unknown ? '1' : null);
+    put('any_tags', list(o.anyTags ?? o.any_tags));
+    put('address', o.address);
+    put('got_step', list(o.gotStep ?? o.got_step));
+    put('not_got_step', list(o.notGotStep ?? o.not_got_step));
+    const query = q.toString();
+    return this.request<Journey>('GET', `/journeys${query ? `?${query}` : ''}`);
   }
 
   markDevHost(host: string) {
@@ -2020,13 +2156,14 @@ export class ProxyMailQA {
     return this.request<void>('DELETE', `/addresses/${encodeURIComponent(address)}`);
   }
 
-  // Records that the test has just submitted a form with the address (a
+  // Records that the test is about to submit a form with the address (a
   // sign-up unless flow says otherwise), on site (a page URL, kept as host and
   // path, with any part of the path that has an email address, an ID, a long
-  // number or a token in it hidden; never its query or fragment). The time is the
-  // server's: the wait that finds the code or link then returns
-  // time_to_email. Pass its submitted_at as since. Never send the form's
-  // contents.
+  // number or a token in it hidden; never its query or fragment). Call it just
+  // before the test presses the button: the time is the server's, taken when
+  // the call arrives, so after the click a fast email can come first. Pass its
+  // submitted_at as since; the wait that finds the code or link then returns
+  // time_to_email. Never send the form's contents.
   markSubmitted(address: string, options: { flow?: SubmitFlow; site?: string } = {}) {
     return this.request<Submit>('POST', `/addresses/${encodeURIComponent(address)}/submits`, { flow: options.flow, site: options.site });
   }

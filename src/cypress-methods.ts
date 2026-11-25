@@ -31,6 +31,7 @@ export const CYPRESS_METHODS = [
   'signupFormCode',
   'signupFormTest',
   'cleanupList',
+  'journey',
   'markDevHost',
   'getAddress',
   'checkOutAccount',
