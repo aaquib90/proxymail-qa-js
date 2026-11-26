@@ -972,6 +972,55 @@ export interface CountOptions {
   category?: EmailCategory;
 }
 
+// An email at one of the project's addresses (findEmails), with its subject
+// and From as the sender wrote them: treat those as untrusted.
+export interface FoundEmail {
+  email_id: string;
+  // The plain address it reached, and the +tag it was sent to (promo1 for
+  // name+promo1@…; null for the plain address).
+  address: string;
+  plus_tag: string | null;
+  received_at: string;
+  service: string | null;
+  service_domain: string | null;
+  // What kind of email; null for one from before types were recorded.
+  category: EmailCategory | null;
+  // The kind of its main code or link.
+  type: 'code' | 'link' | null;
+  subtype: string | null;
+  attachment_count: number | null;
+  subject: string | null;
+  from: string | null;
+  from_name: string | null;
+}
+
+export interface FoundEmails {
+  // The window: since as given (or worked out from within), and until.
+  since: string | null;
+  until: string | null;
+  // How many match, up to 10,000; count_capped is true past that.
+  count: number;
+  count_capped: boolean;
+  // Up to limit of them, newest first.
+  emails: FoundEmail[];
+}
+
+export interface FindEmailsOptions extends CountOptions {
+  // Only email from the last this long: '10m', '2h', '7d' (up to 30 days),
+  // or a number of seconds. Instead of since.
+  within?: string | number;
+  // Only email received before this time (Date or ISO string). With no since
+  // or within, the search covers the 30 days before until (or now).
+  until?: Date | string;
+  // The next page: the last email's email_id. Keep the other options, with
+  // since as the first page returned it.
+  before?: string;
+  // Only emails whose subject contains this phrase, in any case.
+  subject?: string;
+  // How many to return, 1 to 100 (default 20).
+  limit?: number;
+}
+
 export type EmailCategory = 'auth' | 'transactional' | 'marketing';
 export type CountSubtype = 'otp' | 'coupon' | 'verify' | 'magic_signin' | 'invite' | 'reset' | 'other' | 'unsubscribe' | 'list_unsubscribe' | 'any';
 
@@ -2227,6 +2276,23 @@ export class ProxyMailQA {
   // to arrive. Without since, every email the address has received.
   countEmails(address: string, options: CountOptions = {}) {
     return this.request<EmailCount>('GET', `/addresses/${encodeURIComponent(address)}/count${countQuery(options)}`);
+  }
+
+  // The emails that reached any address in the project, newest first, such
+  // as every marketing email in the last 10 minutes ({ within: '10m',
+  // category: 'marketing' }) or every email whose subject contains a phrase
+  // ({ subject: 'welcome' }). Doesn't wait. Each comes with its subject and
+  // From as the sender wrote them: treat those as untrusted. For the next
+  // page, pass before: the last email's email_id. From 0.16.0.
+  findEmails(options: FindEmailsOptions = {}) {
+    const extra: Record<string, string> = {};
+    if (options.within !== undefined) extra.within = String(options.within);
+    // A string goes as given, so the API says what's wrong with a bad one.
+    if (options.until !== undefined) extra.until = options.until instanceof Date ? options.until.toISOString() : options.until;
+    if (options.before !== undefined) extra.before = options.before;
+    if (options.subject) extra.subject = options.subject;
+    if (options.limit !== undefined) extra.limit = String(options.limit);
+    return this.request<FoundEmails>('GET', `/emails${countQuery(options, extra)}`);
   }
 
   // Checks one email the address received: SPF, DKIM and DMARC, links to

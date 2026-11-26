@@ -44,6 +44,7 @@ export const CYPRESS_METHODS = [
   'waitForLink',
   'messages',
   'countEmails',
+  'findEmails',
   'checkEmail',
   'expectNoEmail',
   'markUnsubscribed',

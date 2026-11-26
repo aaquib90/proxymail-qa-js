@@ -180,6 +180,21 @@ describe('ProxyMailQA', () => {
     expect(error).toMatchObject({ status: 409, code: 'email_arrived', message: expect.stringMatching(/^An email reached/) });
   });
 
+  // SID-300, SID-311: the project-wide search.
+  it('finds emails across the project with within, subject, until, before and limit', async () => {
+    const page = (until: string | null, count: number) => Response.json({ since: null, until, count, count_capped: false, emails: [] });
+    const { fetch, qa } = client([page(null, 1), page('2026-11-25T10:05:00.000Z', 0), page(null, 0), page(null, 0)]);
+    expect((await qa.findEmails({ within: '10m', category: 'marketing', subject: 'Black Friday' })).count).toBe(1);
+    expect(fetch.mock.calls[0]![0]).toBe('https://api.test/v1/emails?within=10m&subject=Black+Friday&category=marketing');
+    await qa.findEmails({ until: new Date('2026-11-25T10:05:00Z'), type: 'code', subtype: 'coupon', limit: 100 });
+    expect(fetch.mock.calls[1]![0]).toBe('https://api.test/v1/emails?until=2026-11-25T10%3A05%3A00.000Z&limit=100&type=code&subtype=coupon');
+    await qa.findEmails();
+    expect(fetch.mock.calls[2]![0]).toBe('https://api.test/v1/emails');
+    // A string until goes as given, so the API names what's wrong with a bad one; before pages on.
+    await qa.findEmails({ until: 'yesterday', before: '2b1f0c9e-6d3a-4f1e-9a51-0c4d2e7b8a10' });
+    expect(fetch.mock.calls[3]![0]).toBe('https://api.test/v1/emails?until=yesterday&before=2b1f0c9e-6d3a-4f1e-9a51-0c4d2e7b8a10');
+  });
+
   it("keeps watching past 30 seconds from the server's own since", async () => {
     vi.useFakeTimers({ now: Date.parse('2026-10-15T10:00:00Z') });
     try {
