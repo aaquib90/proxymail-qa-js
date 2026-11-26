@@ -620,7 +620,14 @@ export type ProjectInfo = Record<string, unknown> & {
   custom_fields?: number;
   // The sites set to "Sign-up goes over several screens".
   multi_step_sites?: string[];
+  // What it tests (Project settings → What you test): offers or marketing
+  // bring the coupon and marketing checks and calls. From 0.15.0.
+  areas?: ProjectArea[];
+  // Whether its spam checks (spam_risk, harmful_attachment) are on. From 0.15.0.
+  spam_checks?: boolean;
 };
+
+export type ProjectArea = 'signup' | 'offers' | 'marketing' | 'receipts';
 
 export interface FormValues {
   address: string;
@@ -1018,8 +1025,11 @@ export interface EmailCheck {
   check: CheckId;
   status: 'pass' | 'fail' | 'warn' | 'skip';
   detail: string;
-  // spam_risk only: the spam score out of 10 (5 or more: likely rejected or
-  // sent to spam), and the markers that make it up with their points.
+  // spam_risk only: the inbox score out of 10, where 10 is good (5 or below:
+  // likely rejected or sent to spam; 8.5 or below: may go to spam), and the
+  // markers that lower it with their points. From 0.15.0.
+  inbox_score?: number;
+  // Deprecated: the spam points (10 less inbox_score). Kept until 1.0.
   score?: number;
   markers?: Array<{ id: string; points: number }>;
 }
@@ -1284,7 +1294,7 @@ export type JourneyPhase = 'after_signup' | 'signing_in' | 'password_reset' | 'i
 export type JourneyAgeBand = 'under-18' | '18-24' | '25-34' | '35-44' | '45-54' | '55-plus';
 
 export interface JourneyOptions {
-  // The journey: a site's host, or sender:<domain> for accounts with no site (default: the first listed).
+  // The journey: a site's host, or sender:<domain> for accounts with no site (default: the one address is in, else the first listed).
   site?: string;
   // Only this phase's steps; the sentence and the counts stay whole.
   phase?: JourneyPhase;
@@ -1479,9 +1489,17 @@ export interface Run {
   project?: { id: string; name: string };
   // Not in listRuns.
   events?: RunEvent[];
-  // getRun: where the emails it checked would land (with spam checks on in
-  // Labs), when any was checked.
-  deliverability?: { checked: number; likely_spam: number; may_spam: number; harmful_attachments: number; highest_spam_score: number | null };
+  // getRun: where the emails it checked would land (with the project's spam
+  // checks on), when any was checked. lowest_inbox_score is out of 10, 10
+  // being good; highest_spam_score is deprecated.
+  deliverability?: {
+    checked: number;
+    likely_spam: number;
+    may_spam: number;
+    harmful_attachments: number;
+    lowest_inbox_score?: number | null;
+    highest_spam_score: number | null;
+  };
   // getRun: how it differs from the finished runs before it with the same
   // name; null without any.
   comparison?: { runs: number; changes: Array<{ kind: string; text: RunTextPart[] }> } | null;
@@ -1598,7 +1616,8 @@ export class ProxyMailQA {
   // throws ProxyMailQAError with status 402 and code plan_required; past the
   // day's 50, status 429 and code daily_limit, until midnight UTC.
   // From 0.12.0 it also has fill_unknown_fields, standard_fields_off, locked,
-  // custom_fields (how many) and multi_step_sites.
+  // custom_fields (how many) and multi_step_sites; from 0.13.0, fill_id_fields;
+  // from 0.15.0, areas and spam_checks.
   project() {
     return this.request<ProjectInfo>('GET', '/project');
   }
@@ -1615,7 +1634,9 @@ export class ProxyMailQA {
   // person asks; for one call, pass guess to formValues. fillIdFields (new in
   // 0.13.0) true adds the five ID and tax number ready-made custom fields, or
   // turns on those there, and false turns them off: a lead's key only, and
-  // only when the person asks.
+  // only when the person asks. areas (the whole list, at least one) and
+  // spamChecks (both new in 0.15.0) need the lead too; spam checks can fail a
+  // run.
   updateProject(patch: {
     name?: string;
     website?: string | null;
@@ -1624,14 +1645,17 @@ export class ProxyMailQA {
     mailDomain?: string;
     fillUnknownFields?: FillUnknownFields;
     fillIdFields?: boolean;
+    areas?: ProjectArea[];
+    spamChecks?: boolean;
   }) {
-    const { emailPrefix, mailDomain, fillUnknownFields, fillIdFields, ...rest } = patch;
+    const { emailPrefix, mailDomain, fillUnknownFields, fillIdFields, spamChecks, ...rest } = patch;
     return this.request<ProjectInfo>('PATCH', '/project', {
       ...rest,
       ...(emailPrefix !== undefined ? { email_prefix: emailPrefix } : {}),
       ...(mailDomain !== undefined ? { mail_domain: mailDomain } : {}),
       ...(fillUnknownFields !== undefined ? { fill_unknown_fields: fillUnknownFields } : {}),
       ...(fillIdFields !== undefined ? { fill_id_fields: fillIdFields } : {}),
+      ...(spamChecks !== undefined ? { spam_checks: spamChecks } : {}),
     });
   }
 
@@ -2244,9 +2268,8 @@ export class ProxyMailQA {
     }
   }
 
-  // markUnsubscribed to offers below are Marketing and offer emails, in Labs:
-  // the key's creator switches it on in Account settings → Labs. Until then
-  // they throw a 403 that says so.
+  // markUnsubscribed to offers below are for projects that test offers or
+  // marketing (Project settings → What you test, or updateProject({ areas })).
 
   // Records that the address unsubscribed from a sender, after the test did
   // it in its own browser (Proxy Mail QA never opens unsubscribe links). Any

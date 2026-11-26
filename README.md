@@ -14,18 +14,23 @@ it. Then:
 - wait for a coupon, record whether checkout took it, and catch an offer
   given twice to versions of one address
 - test unsubscribing: any marketing email from that sender afterwards fails
-- check marketing emails: unsubscribe headers, a spam score and the consent
+- check marketing emails: unsubscribe headers, an inbox score and the consent
   rules where the persona lives
 - check a welcome series or drip campaign came in order and on time
 - find out why an email didn't arrive
 - group tests into a run whose report says which test each email came from
 
-Checkout results, offers given twice, unsubscribing, consent, welcome series,
-the marketing checks, the spam score and a site's journey (with its five
-good-practice checks) are in
-[Labs](https://proxymail.qa/docs/labs) for now: the key's creator switches
-them on in the app under Account settings → Labs. Until then those methods
-throw with a 403 that says so, and `checkEmail` leaves those checks out.
+The coupon and marketing checks come with projects that test offers or
+marketing, and the inbox score (out of 10, where 10 is good) and the
+attachment check with the project's spam checks: both are set in the app under
+Project settings → What you test, or with
+`updateProject({ areas, spamChecks })`. `checkEmail` leaves out the checks of
+what the project has off.
+
+A site's journey (`journey()`, with its five good-practice checks) is in
+[Labs](https://proxymail.qa/docs/labs) for now: the key's creator switches it
+on in the app under Account settings → Labs. Until then `journey()` throws
+with a 403 that says so, and `checkEmail` leaves those checks out.
 
 Get an API key in [app.proxymail.qa](https://app.proxymail.qa) → Project
 settings → API keys (the Free plan includes it), and set it as
@@ -271,12 +276,12 @@ await qa.withAccount(
   },
 );
 
-// Offers (Labs): wait for the coupon (offers can take minutes), apply it at
+// Offers: wait for the coupon (offers can take minutes), apply it at
 // checkout on staging with test payments, then record what the app said.
 const coupon = await qa.waitForCode(address, { type: 'coupon', timeout: 600 });
 await qa.recordCouponResult(address, 'accepted', { code: coupon.value });
 
-// Unsubscribing (Labs): after the test unsubscribes in the app (Proxy Mail
+// Unsubscribing: after the test unsubscribes in the app (Proxy Mail
 // QA never opens the link), marketing from that sender fails; receipts can
 // still come.
 await qa.markUnsubscribed(address);

@@ -657,6 +657,15 @@ describe('ProxyMailQA', () => {
     expect((await qa.project()).multi_step_sites).toEqual(['https://staging.example.com/*']);
   });
 
+  it('changes what the project tests and its spam checks with updateProject', async () => {
+    const project = { id: 'p1', areas: ['signup', 'marketing'], spam_checks: false };
+    const { fetch, qa } = client([Response.json(project)]);
+    const saved = await qa.updateProject({ areas: ['signup', 'marketing'], spamChecks: false });
+    expect(saved.areas).toEqual(['signup', 'marketing']);
+    expect(saved.spam_checks).toBe(false);
+    expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ areas: ['signup', 'marketing'], spam_checks: false });
+  });
+
   describe('prepared accounts (create, check and reset)', () => {
     const held = (address: string, token = 't1', tags = ['premium']) => ({ address, tags, persona: null, checkout: { token, until: 'x' } });
     const calls = (fetch: ReturnType<typeof client>['fetch']) =>
